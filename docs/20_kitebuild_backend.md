@@ -56,6 +56,15 @@ import { git } from "@cloudflare/kitebuild-git-applet";
 new KitebuildBackend({ tools: [git()] });
 ```
 
+## Built-in commands
+
+The machine has the Worker shell's `assets` and `artifacts` commands, with the same arguments, output and messages. See [Assets](./14_assets_interface.md) and [Artifacts](./15_artifacts_interface.md).
+
+- `assets publish <path> [<expiry>]` publishes a file through the Workspace's assets client and prints the URL. Files the command wrote are committed first, so a file written earlier in the same command is published as it is now. Without an assets client it prints `assets: publishing is not configured for this workspace` and exits 1.
+- `artifacts ...` forwards its arguments and environment to the Workspace's Artifacts client. `artifacts create` adds its git remote through the Workspace's git client, outside the machine. The rest of the command sees the change when no other command is running; otherwise it appears at the next command.
+
+There is no built-in `git`; pass a git toolset to get one. A toolset program at `/usr/bin/assets` or `/usr/bin/artifacts` replaces the built-in command.
+
 ## Files
 
 Paths are the same on both sides: the agent's `/workspace/x` is the shell's `/workspace/x`. Outside `paths`, `/bin` and `/etc` come from the initramfs and `/tmp` is in memory.
