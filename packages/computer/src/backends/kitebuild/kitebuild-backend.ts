@@ -6,8 +6,10 @@
 // mounts the Workspace store directly (./workspace-mount.ts), so the
 // handle declares sync: "none". Commands are real processes: pipes,
 // background jobs and signals work, and output streams as it is
-// written. Programs beyond BusyBox come from toolsets the caller
-// installs and passes in, such as @cloudflare/kitebuild-git-applet.
+// written. The Worker shell's `assets` and `artifacts` commands are
+// built in (./workspace-commands.ts); other programs beyond BusyBox
+// come from toolsets the caller installs and passes in, such as
+// @cloudflare/kitebuild-git-applet.
 
 import type { ExecEvent, ShellRPC, SyncRPC, WorkspaceRPC } from "@cloudflare/computer-rpc";
 import { currentRev, SQLiteWorkspaceProvider } from "@cloudflare/dofs";
@@ -24,6 +26,7 @@ import INITRAMFS from "@cloudflare/kitebuild-core/artifacts/initramfs.wasm";
 
 import type { BackendHandle, WorkspaceBackend, WorkspaceBackendHost } from "../../backend";
 import type { WorkspaceEgressPolicy } from "../../runtime/egress";
+import { workspacePrograms } from "./workspace-commands";
 import { mountWorkspace, type WorkspaceMount } from "./workspace-mount";
 
 export interface KitebuildBackendOptions {
@@ -76,7 +79,7 @@ export class KitebuildBackend implements WorkspaceBackend {
     );
     const more =
       extra.length > 0 ? `, plus ${extra.join(", ")}.` : ". Cannot run binaries outside that set.";
-    this.description = `A BusyBox Linux userland in the Workspace's Durable Object, with real processes, pipes, background jobs and signals, and output that streams as it is written. Workspace files are shared directly with the file tools. Has sh, awk, sed, grep, find, xargs, tar, gzip, xz, diff, patch, vi, wget and the rest of BusyBox${more}`;
+    this.description = `A BusyBox Linux userland in the Workspace's Durable Object, with real processes, pipes, background jobs and signals, and output that streams as it is written. Workspace files are shared directly with the file tools. Has sh, awk, sed, grep, find, xargs, tar, gzip, xz, diff, patch, vi, wget and the rest of BusyBox, and the assets and artifacts commands${more}`;
   }
 
   async connect(host: WorkspaceBackendHost): Promise<BackendHandle> {
@@ -103,6 +106,9 @@ class KitebuildRuntime {
   readonly #execs = new Map<string, ExecLog>();
   #running = 0;
   #rev: number;
+  // Set when the store changed under a running command and the mounts
+  // could not reload then; the next command reloads them.
+  #stale = false;
 
   constructor(host: WorkspaceBackendHost, options: KitebuildBackendOptions) {
     this.#host = host;
@@ -112,7 +118,17 @@ class KitebuildRuntime {
     this.#machine = new Machine({
       programs: new ProgramRegistry({
         defaultProgram: { module: BUSYBOX, abi: "linux" },
-        programs: tools.flatMap((tool) => tool.programs),
+        // Built-in commands first, so a toolset can replace them.
+        programs: [
+          ...workspacePrograms({
+            host,
+            flush: () => {
+              for (const mount of this.#mounts) mount.flush();
+            },
+            reload: () => this.#reload(),
+          }),
+          ...tools.flatMap((tool) => tool.programs),
+        ],
       }),
       initramfs: INITRAMFS,
       egress: egressPolicy(options.egress ?? { mode: "none" }),
@@ -162,8 +178,9 @@ class KitebuildRuntime {
 
     // Pick up Workspace writes made outside the machine since the last
     // command. Only between commands, so a running one keeps its tree.
-    if (this.#running === 0 && currentRev(this.#host.db) !== this.#rev) {
+    if (this.#running === 0 && (this.#stale || currentRev(this.#host.db) !== this.#rev)) {
       for (const mount of this.#mounts) mount.reset();
+      this.#stale = false;
     }
 
     const log: ExecLog = { events: [], done: false, listeners: new Set() };
@@ -221,6 +238,16 @@ class KitebuildRuntime {
     });
 
     return { id, events: this.#stream(log, undefined) };
+  }
+
+  // Reload the mounts for a program that wrote the store through the
+  // host, if its own command is the only one running.
+  #reload(): void {
+    if (this.#running === 1) {
+      for (const mount of this.#mounts) mount.reset();
+    } else {
+      this.#stale = true;
+    }
   }
 
   #log(id: string): ExecLog {

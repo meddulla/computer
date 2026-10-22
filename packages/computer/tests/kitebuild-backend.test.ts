@@ -125,4 +125,96 @@ describe("KitebuildBackend", () => {
       "gateway saw GET http://example.com/plain\ngateway saw GET https://example.com/secure\n",
     );
   });
+
+  describe("assets", () => {
+    it("publishes a file written earlier in the same command", async () => {
+      const stub = host();
+      // fd 3 stays open, so the file is still in a write buffer.
+      const result = await stub.exec(
+        "exec 3> out.txt && printf 'fresh bytes' >&3 && assets publish out.txt 5m",
+        { cwd: "/workspace" },
+      );
+      expect(result).toMatchObject({
+        exitCode: 0,
+        stdout: "https://assets.example/out.txt\n",
+        stderr: "",
+      });
+      expect((await stub.records()).published).toEqual([
+        { path: "/workspace/out.txt", expiresAfter: 5 * 60_000, body: "fresh bytes" },
+      ]);
+    });
+
+    it("reports a Workspace without an assets client", async () => {
+      const stub = host();
+      await stub.writeFile("/workspace/out.txt", "x");
+      const result = await stub.exec("assets publish /workspace/out.txt", { backend: "fakes" });
+      expect(result).toMatchObject({
+        exitCode: 1,
+        stdout: "",
+        stderr: "assets: publishing is not configured for this workspace\n",
+      });
+    });
+
+    it("can be replaced by a toolset", async () => {
+      const result = await host().exec("assets publish /workspace/out.txt", { backend: "gateway" });
+      expect(result).toMatchObject({ exitCode: 0, stdout: "replaced\n" });
+    });
+
+    it("prints usage for bad arguments", async () => {
+      const stub = host();
+      for (const command of ["assets", "assets publish", "assets nope x", "assets publish x 5y"]) {
+        const result = await stub.exec(command);
+        expect(result.exitCode, command).toBe(2);
+        expect(result.stdout, command).toBe("");
+      }
+      expect((await stub.exec("assets publish")).stderr).toBe(
+        "usage: assets publish <path> [<expiry>]\n",
+      );
+      expect((await stub.exec("assets publish x 5y")).stderr).toBe('assets: invalid expiry "5y"\n');
+      expect((await stub.records()).published).toEqual([]);
+    });
+  });
+
+  describe("artifacts", () => {
+    it("forwards argv and env to the artifacts client", async () => {
+      const stub = host();
+      const result = await stub.exec("TOKEN=t artifacts repo list --json", {
+        backend: "fakes",
+        env: { CI: "1" },
+      });
+      expect(result).toMatchObject({ exitCode: 4, stdout: "", stderr: "artifacts: failed\n" });
+      const [call] = (await stub.records()).artifacts;
+      expect(call.argv).toEqual(["repo", "list", "--json"]);
+      expect(call.env).toMatchObject({ CI: "1", TOKEN: "t", HOME: "/root" });
+    });
+
+    it("shows the remote create adds to the rest of the command", async () => {
+      const stub = host();
+      await stub.writeFile("/workspace/repo/remotes.txt", "none\n");
+      const result = await stub.exec(
+        "cat remotes.txt && artifacts create demo && cat remotes.txt",
+        { backend: "fakes", cwd: "/workspace/repo" },
+      );
+      expect(result).toMatchObject({
+        exitCode: 0,
+        stdout: "none\ncreated demo\norigin https://x/repo.git\n",
+      });
+    });
+
+    it("shows the remote at the next command when another is running", async () => {
+      const stub = host();
+      await stub.writeFile("/workspace/repo/remotes.txt", "none\n");
+      const [, during] = await stub.overlapping(
+        "sleep 2",
+        "cat remotes.txt && artifacts create demo && cat remotes.txt",
+        { backend: "fakes", cwd: "/workspace/repo" },
+      );
+      expect(during.stdout).toBe("none\ncreated demo\nnone\n");
+      const after = await stub.exec("cat remotes.txt", {
+        backend: "fakes",
+        cwd: "/workspace/repo",
+      });
+      expect(after.stdout).toBe("origin https://x/repo.git\n");
+    });
+  });
 });

@@ -1,15 +1,20 @@
 // Workerd harness for the KitebuildBackend integration tests.
 //
-// HostDO owns one Workspace with two Kitebuild backends: the default,
-// with no network and a small JS applet toolset, and "gateway", whose
-// egress goes through the Gateway entrypoint below. The test calls
-// HostDO's methods directly through its stub.
+// HostDO owns one Workspace with three Kitebuild backends: the default,
+// with no network, a small JS applet toolset and a fake assets client;
+// "gateway", whose egress goes through the Gateway entrypoint below
+// and whose toolset replaces the built-in `assets`; and "fakes", which
+// sees fake artifacts and git clients and no assets client. The test
+// calls HostDO's methods directly through its stub.
 
 import { DurableObject, WorkerEntrypoint } from "cloudflare:workers";
 import { writeFdBytes } from "@cloudflare/kitebuild-core";
 import type { JsProgramCtx, Toolset } from "@cloudflare/kitebuild-core";
 
+import type { ArtifactsCLIInput, ArtifactsCLIResult } from "../src/artifacts/index";
+import type { WorkspaceBackend } from "../src/backend";
 import { KitebuildBackend } from "../src/backends/kitebuild/index";
+import type { GitCliInput, GitCliResult } from "../src/git/index";
 import { Workspace } from "../src/index";
 
 export interface Env {
@@ -51,6 +56,32 @@ const greeter: Toolset = {
   extras: { GREETING: "hello" },
 };
 
+// A toolset that replaces the built-in `assets` command.
+const replacement: Toolset = {
+  programs: [
+    {
+      path: "/usr/bin/assets",
+      abi: "js",
+      main: (ctx: JsProgramCtx) => {
+        const bytes = new TextEncoder().encode("replaced\n");
+        writeFdBytes(ctx.proc.fdt, 1, bytes, 0, bytes.length);
+        return 0;
+      },
+    },
+  ],
+};
+
+export interface Published {
+  path: string;
+  expiresAfter: number;
+  body: string;
+}
+
+export interface ArtifactsCall {
+  argv: string[];
+  env: Record<string, string>;
+}
+
 export class Gateway extends WorkerEntrypoint {
   override async fetch(request: Request): Promise<Response> {
     return new Response(`gateway saw ${request.method} ${request.url}\n`);
@@ -59,19 +90,89 @@ export class Gateway extends WorkerEntrypoint {
 
 export class HostDO extends DurableObject<Env> {
   readonly #workspace: Workspace;
+  readonly published: Published[] = [];
+  readonly artifactsCalls: ArtifactsCall[] = [];
 
   constructor(ctx: DurableObjectState, env: Env) {
     super(ctx, env);
+    const fakes = new KitebuildBackend({ id: "fakes" });
+    const withFakes: WorkspaceBackend = {
+      id: fakes.id,
+      type: fakes.type,
+      connect: (host) =>
+        fakes.connect({
+          db: host.db,
+          fs: host.fs,
+          artifacts: this.#fakeArtifacts() as never,
+          git: this.#fakeGit() as never,
+        }),
+    };
     this.#workspace = new Workspace({
       storage: ctx.storage,
+      assets: {
+        share: async (path, { expiresAfter }) => {
+          const body = await this.#workspace.fs.readFile(path, "utf8");
+          this.published.push({ path, expiresAfter, body });
+          return `https://assets.example/${path.split("/").pop()}`;
+        },
+      },
       backends: [
         new KitebuildBackend({ tools: [greeter], env: { CI: "1" } }),
         new KitebuildBackend({
           id: "gateway",
+          tools: [replacement],
           egress: { mode: "http-gateway", gateway: ctx.exports.Gateway({}) },
         }),
+        withFakes,
       ],
     });
+  }
+
+  // Records each call. `create` adds a remote through the command's
+  // remoteAdd, as the real client does.
+  #fakeArtifacts() {
+    return {
+      cli: async (input: ArtifactsCLIInput): Promise<ArtifactsCLIResult> => {
+        this.artifactsCalls.push({ argv: input.argv, env: input.env ?? {} });
+        if (input.argv[0] === "create") {
+          const added = await input.remoteAdd?.({ name: "origin", url: "https://x/repo.git" });
+          return { stdout: `created ${input.argv[1]}\n`, stderr: "", exitCode: added?.ok ? 0 : 1 };
+        }
+        return { stdout: "", stderr: "artifacts: failed\n", exitCode: 4 };
+      },
+    };
+  }
+
+  // Writes `git remote add` straight to the Workspace store, the way
+  // the real git client writes .git/config, outside the machine.
+  #fakeGit() {
+    return {
+      cli: async (input: GitCliInput): Promise<GitCliResult> => {
+        if (input.argv[0] === "remote" && input.argv[1] === "add") {
+          await this.#workspace.fs.writeFile(
+            `${input.cwd}/remotes.txt`,
+            `${input.argv.at(-2)} ${input.argv.at(-1)}\n`,
+          );
+        }
+        return { stdout: "", stderr: "", exitCode: 0 };
+      },
+    };
+  }
+
+  async records(): Promise<{ published: Published[]; artifacts: ArtifactsCall[] }> {
+    return { published: this.published, artifacts: this.artifactsCalls };
+  }
+
+  // Runs `second` while `first` is still running.
+  async overlapping(
+    first: string,
+    second: string,
+    options: ExecOptions = {},
+  ): Promise<[ExecResult, ExecResult]> {
+    const a = this.exec(first, options);
+    await new Promise((resolve) => setTimeout(resolve, 200));
+    const b = await this.exec(second, options);
+    return [await a, b];
   }
 
   async writeFile(path: string, body: string): Promise<void> {
