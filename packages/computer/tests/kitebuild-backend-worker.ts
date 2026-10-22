@@ -116,7 +116,7 @@ export class HostDO extends DurableObject<Env> {
           git: this.#fakeGit() as never,
         }),
     };
-    const nogit = new KitebuildBackend({ id: "nogit" });
+    const nogit = new KitebuildBackend({ id: "nogit", git: "workspace" });
     const withoutGit: WorkspaceBackend = {
       id: nogit.id,
       type: nogit.type,
@@ -147,6 +147,8 @@ export class HostDO extends DurableObject<Env> {
         }),
         withFakes,
         withoutGit,
+        new KitebuildBackend({ id: "wsgit", git: "workspace" }),
+        new KitebuildBackend({ id: "gitfetch", git: { fetch: (input) => this.#gitFetch(input) } }),
       ],
     });
   }
@@ -180,6 +182,19 @@ export class HostDO extends DurableObject<Env> {
         return { stdout: "", stderr: "", exitCode: 0 };
       },
     };
+  }
+
+  readonly gitRequests: string[] = [];
+
+  // Stands in for an embedder's fetch: records each request git makes and
+  // answers 404, so a clone fails after its first request.
+  async #gitFetch(input: RequestInfo | URL): Promise<Response> {
+    this.gitRequests.push(String(input instanceof Request ? input.url : input));
+    return new Response("not here", { status: 404 });
+  }
+
+  async gitFetchRequests(): Promise<string[]> {
+    return this.gitRequests;
   }
 
   async records(): Promise<{ published: Published[]; artifacts: ArtifactsCall[] }> {

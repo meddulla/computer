@@ -182,6 +182,22 @@ describe("mountWorkspace", () => {
     expect(read(vfs, "/workspace/d/e/f")).toBe("deep");
   });
 
+  it("changes a file's generation when it is written here or outside", async () => {
+    // git status compares generations to see same-size rewrites.
+    const { fs, provider } = store();
+    await fs.writeFile("/workspace/f", "aaaa");
+    const { vfs, mount } = mounted(provider);
+    const first = body(vfs, "/workspace/f").generation;
+    body(vfs, "/workspace/f").writeFrom(text("bbbb"), 0);
+    const second = body(vfs, "/workspace/f").generation;
+    mount.flush();
+    await fs.writeFile("/workspace/f", "cccc");
+    mount.refresh(["/workspace/f"]);
+    const third = body(vfs, "/workspace/f").generation;
+    expect(new Set([first, second, third]).size).toBe(3);
+    expect(read(vfs, "/workspace/f")).toBe("cccc");
+  });
+
   it("returns Linux errno values", () => {
     const { provider } = store();
     const { vfs } = mounted(provider);

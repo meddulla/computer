@@ -23,6 +23,7 @@ import {
   type FileBody,
   type FsNode,
   LazyChildren,
+  nextGeneration,
   Vfs,
   type VfsPersistence,
 } from "@cloudflare/kitebuild-core/vfs";
@@ -161,6 +162,8 @@ export function mountWorkspace(
 
   class Body implements FileBody {
     readonly residentBytes = 0;
+    // Changes with every write, here or (through refresh) outside the machine.
+    generation = nextGeneration();
     #listeners?: Set<() => void>;
 
     constructor(
@@ -243,6 +246,7 @@ export function mountWorkspace(
     }
 
     #notify(): void {
+      this.generation = nextGeneration();
       if (this.#listeners) for (const listener of this.#listeners) listener();
     }
   }
@@ -464,6 +468,7 @@ export function mountWorkspace(
       if (type === "reg" && current.body instanceof Body && !buffered.has(current)) {
         uncache(current);
         current.body.size = stat.size;
+        current.body.generation = nextGeneration();
       }
       if (type === "symlink") current.link = provider.readlinkSync(changed);
       return;

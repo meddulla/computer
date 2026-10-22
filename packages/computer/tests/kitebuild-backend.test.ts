@@ -142,27 +142,48 @@ describe("KitebuildBackend", () => {
       GIT_COMMITTER_EMAIL: "ada@example.com",
     };
 
-    it("runs the Workspace's git client by default", async () => {
+    it("runs Kitebuild's git by default", async () => {
       const stub = host();
       const result = await stub.exec(
-        "mkdir repo && cd repo && git init >/dev/null && echo hi > a.txt && git add a.txt && " +
-          "git commit -m first >/dev/null && git log --oneline | wc -l && test -f .git/HEAD && echo has-head",
+        "mkdir repo && cd repo && git init -q && echo hi > a.txt && git add a.txt && " +
+          "git commit -q -m first >/dev/null && git log --oneline | wc -l && git rev-parse --abbrev-ref HEAD",
         { cwd: "/workspace", env: identity },
       );
-      expect(result).toMatchObject({ exitCode: 0, stdout: "1\nhas-head\n" });
-      expect(await stub.readFile("/workspace/repo/.git/HEAD")).toMatch(/^ref: refs\/heads\//);
+      expect(result).toMatchObject({ exitCode: 0, stdout: "1\nmain\n" });
+      // The machine's files are the Workspace's, so the agent sees the repo.
+      expect(await stub.readFile("/workspace/repo/.git/HEAD")).toBe("ref: refs/heads/main\n");
     });
 
     it("commits files the same command wrote", async () => {
       const result = await host().exec(
-        "mkdir r && cd r && git init >/dev/null && printf 'one\\ntwo\\n' > notes.txt && " +
-          "git add notes.txt && git commit -m notes >/dev/null && git log --oneline | grep -c notes && " +
-          "echo three >> notes.txt && git status",
+        "git init -q r && cd r && printf 'one\\ntwo\\n' > notes.txt && git add notes.txt && " +
+          "git commit -q -m notes >/dev/null && echo three >> notes.txt && git status",
         { cwd: "/workspace", env: identity },
       );
       expect(result.exitCode).toBe(0);
-      // The second line comes from git seeing the shell's unsaved append.
-      expect(result.stdout).toMatch(/^1\n.*notes\.txt/s);
+      expect(result.stdout).toMatch(/modified:\s+notes\.txt/);
+    });
+
+    it("sends Kitebuild's git HTTP through the given fetch", async () => {
+      const stub = host();
+      const result = await stub.exec("git clone https://git.example.test/repo.git", {
+        backend: "gitfetch",
+        cwd: "/workspace",
+      });
+      expect(result.exitCode).not.toBe(0);
+      expect(await stub.gitFetchRequests()).toEqual([
+        "https://git.example.test/repo.git/info/refs?service=git-upload-pack",
+      ]);
+    });
+
+    it("runs the Workspace's git client when asked", async () => {
+      const stub = host();
+      const result = await stub.exec(
+        "mkdir repo && cd repo && git init >/dev/null && echo hi > a.txt && git add a.txt && " +
+          "git commit -m first >/dev/null && git log --oneline | wc -l && test -f .git/HEAD && echo has-head",
+        { backend: "wsgit", cwd: "/workspace", env: identity },
+      );
+      expect(result).toMatchObject({ exitCode: 0, stdout: "1\nhas-head\n" });
     });
 
     it("reports a Workspace without git", async () => {

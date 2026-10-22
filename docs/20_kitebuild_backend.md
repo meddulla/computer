@@ -9,7 +9,7 @@ It sits between the Worker shell, which starts fast but runs a fixed command set
 
 ## Setup
 
-`@cloudflare/kitebuild-core` is an optional peer dependency. Install it next to `@cloudflare/computer`:
+`@cloudflare/kitebuild-core` and `@cloudflare/kitebuild-git-applet` are optional peer dependencies of `@cloudflare/computer`, needed by this backend. Install them next to it:
 
 ```ts
 import { DurableObject } from "cloudflare:workers";
@@ -47,6 +47,7 @@ for await (const event of run) {
 | `cacheBytes` | 8 MiB | File bytes cached in memory for reads. |
 | `env` | `{}` | Environment every command starts with. |
 | `maxExecs` | 4 | Commands running at once; more fail with `EEXEC_BUSY`. |
+| `git` | `"kitebuild"` | Which `git` the shell has; see [git](#git). |
 
 Programs beyond BusyBox come from packages the caller installs and passes in. Each exports toolsets:
 
@@ -60,20 +61,26 @@ Some tools load their wasm only when first run, through `import.source()`, which
 
 ## Built-in commands
 
-The machine has the Worker shell's `git`, `assets` and `artifacts` commands, with the same arguments, output and messages. See [Git](./13_git_interface.md), [Assets](./14_assets_interface.md) and [Artifacts](./15_artifacts_interface.md).
+### git
 
-- `git ...` runs the Workspace's git client, the same one as `workspace.git` and the Worker shell's `git`. Pass `createGitClient()` from `@cloudflare/computer/git` as the Workspace's `git` option to enable it; without it, `git` prints the not-configured message and exits 1. Files the command wrote are committed before each `git` call, and what git writes under the mounted paths is visible to the rest of the command.
+`git` is Kitebuild's git (`@cloudflare/kitebuild-git-applet`) by default: isomorphic-git working on the machine's own files, with busyworker's patches for large clones and checkouts. It covers `init`, `clone`, `status`, `log`, `add`, `commit`, `branch`, `checkout`, `remote`, `config`, `fetch`, `pull`, `push`, `apply`, `reset`, `cherry-pick`, `revert`, `blame` and more, and refuses options it does not support by name.
+
+Its HTTP requests (clone, fetch, push) run in the Durable Object with the global `fetch`, so `egress` does not apply to them. Pass your own fetch to add credentials or apply a policy:
+
+```ts
+new KitebuildBackend({ git: { fetch: (input, init) => fetchWithAuth(input, init) } });
+```
+
+`git: "workspace"` uses the Workspace's git client instead, the same one as `workspace.git` and the Worker shell's `git`. Pass `createGitClient()` from `@cloudflare/computer/git` as the Workspace's `git` option to enable it; without it, `git` prints the not-configured message and exits 1. Files the command wrote are committed before each `git` call, and what git writes under the mounted paths is visible to the rest of the command.
+
+### assets and artifacts
+
+The machine has the Worker shell's `assets` and `artifacts` commands, with the same arguments, output and messages. See [Assets](./14_assets_interface.md) and [Artifacts](./15_artifacts_interface.md).
 
 - `assets publish <path> [<expiry>]` publishes a file through the Workspace's assets client and prints the URL. Files the command wrote are committed first, so a file written earlier in the same command is published as it is now. Without an assets client it prints `assets: publishing is not configured for this workspace` and exits 1.
 - `artifacts ...` forwards its arguments and environment to the Workspace's Artifacts client. `artifacts create` adds its git remote through the Workspace's git client, outside the machine; the rest of the command sees the change straight away, and files the command already has open stay usable.
 
-A toolset program at `/usr/bin/git`, `/usr/bin/assets` or `/usr/bin/artifacts` replaces the built-in command. For example, Kitebuild's git, which works on the machine's own files:
-
-```ts
-import { git } from "@cloudflare/kitebuild-git-applet";
-
-new KitebuildBackend({ tools: [git()] });
-```
+A toolset program at `/usr/bin/git`, `/usr/bin/assets` or `/usr/bin/artifacts` replaces the built-in command.
 
 ## Files
 

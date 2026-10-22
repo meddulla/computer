@@ -17,6 +17,8 @@ import {
 
 export interface WorkspaceCommandsHost {
   readonly host: WorkspaceBackendHost;
+  /** Whether to include `git` backed by the Workspace's git client. */
+  readonly git: boolean;
   /** Commit the mounts' buffered writes to the Workspace store. */
   flush(): void;
   /** Apply Workspace paths changed after store revision `since` to the mounts. */
@@ -25,6 +27,7 @@ export interface WorkspaceCommandsHost {
 
 export function workspacePrograms({
   host,
+  git,
   flush,
   refreshAfter,
 }: WorkspaceCommandsHost): ProgramSpec[] {
@@ -38,20 +41,21 @@ export function workspacePrograms({
     return result;
   };
 
-  return [
-    {
-      // The Workspace's git client by default; a git toolset, such as
-      // @cloudflare/kitebuild-git-applet's, registers after and replaces it.
-      path: "/usr/bin/git",
-      abi: "js",
-      main: async (ctx) =>
-        write(
-          ctx,
-          await throughHost(() =>
-            runGitCommand(host.git, ctx.argv.slice(1), ctx.proc.cwd, environment(ctx.envp)),
-          ),
+  const workspaceGit: ProgramSpec = {
+    // A git toolset registers after and replaces it.
+    path: "/usr/bin/git",
+    abi: "js",
+    main: async (ctx) =>
+      write(
+        ctx,
+        await throughHost(() =>
+          runGitCommand(host.git, ctx.argv.slice(1), ctx.proc.cwd, environment(ctx.envp)),
         ),
-    },
+      ),
+  };
+
+  return [
+    ...(git ? [workspaceGit] : []),
     {
       path: "/usr/bin/assets",
       abi: "js",

@@ -6,10 +6,11 @@
 // mounts the Workspace store directly (./workspace-mount.ts), so the
 // handle declares sync: "none". Commands are real processes: pipes,
 // background jobs and signals work, and output streams as it is
-// written. The Worker shell's `git`, `assets` and `artifacts` commands
-// are built in (./workspace-commands.ts); other programs beyond BusyBox
-// come from toolsets the caller installs and passes in, such as
-// @cloudflare/kitebuild-git-applet.
+// written. `git` is Kitebuild's git applet by default, working on the
+// machine's own files, or the Workspace's git client when asked. The
+// Worker shell's `assets` and `artifacts` commands are built in
+// (./workspace-commands.ts); other programs beyond BusyBox come from
+// toolsets the caller installs and passes in.
 
 import type { ExecEvent, ShellRPC, SyncRPC, WorkspaceRPC } from "@cloudflare/computer-rpc";
 import { coalesceChanges, currentRev, SQLiteWorkspaceProvider } from "@cloudflare/dofs";
@@ -23,6 +24,7 @@ import {
 } from "@cloudflare/kitebuild-core";
 import BUSYBOX from "@cloudflare/kitebuild-core/artifacts/busybox.wasm";
 import INITRAMFS from "@cloudflare/kitebuild-core/artifacts/initramfs.wasm";
+import { git as kitebuildGit, type GitFetch } from "@cloudflare/kitebuild-git-applet";
 
 import type { BackendHandle, WorkspaceBackend, WorkspaceBackendHost } from "../../backend";
 import type { WorkspaceEgressPolicy } from "../../runtime/egress";
@@ -51,6 +53,15 @@ export interface KitebuildBackendOptions {
   env?: Record<string, string>;
   /** Most commands running at once. Defaults to 4. */
   maxExecs?: number;
+  /**
+   * Which `git` the shell has. "kitebuild" (the default) is Kitebuild's
+   * git applet, run on the machine's own files;
+   * `{ fetch }` is the same with its HTTP requests sent through `fetch`,
+   * to add credentials or apply an egress policy, since it otherwise
+   * uses the global fetch. "workspace" is the Workspace's git client, as
+   * in the Worker shell. A toolset program at /usr/bin/git replaces any.
+   */
+  git?: "kitebuild" | "workspace" | { fetch: GitFetch };
 }
 
 const DEFAULT_ENV = { HOME: "/root", PATH: "/usr/bin:/bin:/usr/sbin:/sbin", TERM: "dumb" };
@@ -80,7 +91,7 @@ export class KitebuildBackend implements WorkspaceBackend {
     );
     const more =
       extra.length > 0 ? `, plus ${extra.join(", ")}.` : ". Cannot run binaries outside that set.";
-    this.description = `A BusyBox Linux userland in the Workspace's Durable Object, with real processes, pipes, background jobs and signals, and output that streams as it is written. Workspace files are shared directly with the file tools. Has sh, awk, sed, grep, find, xargs, tar, gzip, xz, diff, patch, vi, wget and the rest of BusyBox, and git, assets and artifacts commands backed by the Workspace${more}`;
+    this.description = `A BusyBox Linux userland in the Workspace's Durable Object, with real processes, pipes, background jobs and signals, and output that streams as it is written. Workspace files are shared directly with the file tools. Has sh, awk, sed, grep, find, xargs, tar, gzip, xz, diff, patch, vi, wget and the rest of BusyBox, git, and the assets and artifacts commands${more}`;
   }
 
   async connect(host: WorkspaceBackendHost): Promise<BackendHandle> {
@@ -114,7 +125,14 @@ class KitebuildRuntime {
     this.#journal = new ExecJournal(host.db, backendId);
     this.#env = { ...DEFAULT_ENV, ...options.env };
     this.#maxExecs = options.maxExecs ?? 4;
-    const tools = options.tools ?? [];
+    const gitOption = options.git ?? "kitebuild";
+    // The applet's toolset comes first, so a caller's toolset still replaces it.
+    const tools = [
+      ...(gitOption === "workspace"
+        ? []
+        : [kitebuildGit(gitOption === "kitebuild" ? {} : { fetch: gitOption.fetch })]),
+      ...(options.tools ?? []),
+    ];
     this.#machine = new Machine({
       programs: new ProgramRegistry({
         defaultProgram: { module: BUSYBOX, abi: "linux" },
@@ -122,6 +140,7 @@ class KitebuildRuntime {
         programs: [
           ...workspacePrograms({
             host,
+            git: gitOption === "workspace",
             flush: () => {
               for (const mount of this.#mounts) mount.flush();
             },
