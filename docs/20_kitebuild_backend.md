@@ -56,6 +56,8 @@ import { rg, jq } from "@cloudflare/kitebuild-tools";
 new KitebuildBackend({ tools: [rg(), jq()] });
 ```
 
+Some tools load their wasm only when first run, through `import.source()`, which needs the `new_module_registry` compatibility flag; each package's README says which. The wasm still counts toward the Worker's upload, so import only the tools you use.
+
 ## Built-in commands
 
 The machine has the Worker shell's `git`, `assets` and `artifacts` commands, with the same arguments, output and messages. See [Git](./13_git_interface.md), [Assets](./14_assets_interface.md) and [Artifacts](./15_artifacts_interface.md).
