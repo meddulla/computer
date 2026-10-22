@@ -41,6 +41,7 @@ export default defineConfig({
     "modules/assets": "src/modules/assets.ts",
     "backends/container-legacy/index": "src/backends/container-legacy/index.ts",
     "backends/container/index": "src/backends/container/index.ts",
+    "backends/kitebuild/index": "src/backends/kitebuild/index.ts",
     "backends/worker-javascript/index": "src/backends/worker-javascript/index.ts",
     "backends/worker-shell/index": "src/backends/worker-shell/index.ts",
     // The shell-module groups build-bundle.mjs emits. Each is its
