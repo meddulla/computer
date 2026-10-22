@@ -1,4 +1,4 @@
-// The `assets` and `artifacts` shell commands, shared by the Worker
+// The `git`, `assets` and `artifacts` shell commands, shared by the Worker
 // shell and the Kitebuild backend. Each shell adapts its own command
 // signature to these functions, so both print the same output and
 // messages for the same argv.
@@ -10,6 +10,33 @@ export interface CommandResult {
   stdout: string;
   stderr: string;
   exitCode: number;
+}
+
+/**
+ * Runs `git` through the Workspace's git client. `args` excludes the
+ * command name. The client turns its own subcommand failures into
+ * results; a throw (no git configured, transport failure) becomes
+ * exit 1 with the message on stderr.
+ */
+export async function runGitCommand(
+  git: { cli(input: GitCliInput): Promise<GitCliResult> },
+  args: string[],
+  cwd: string,
+  env: Record<string, string>,
+  stdin?: string,
+): Promise<CommandResult> {
+  try {
+    const result = await git.cli({
+      argv: args,
+      cwd,
+      env,
+      ...(stdin === undefined ? {} : { stdin }),
+    });
+    return { stdout: result.stdout, stderr: result.stderr, exitCode: result.exitCode };
+  } catch (cause) {
+    const message = cause instanceof Error ? cause.message : String(cause);
+    return { stdout: "", stderr: `git: ${message}\n`, exitCode: 1 };
+  }
 }
 
 const DEFAULT_EXPIRY_MS = 60 * 60 * 1000;

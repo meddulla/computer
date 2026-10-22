@@ -6,8 +6,8 @@
 // mounts the Workspace store directly (./workspace-mount.ts), so the
 // handle declares sync: "none". Commands are real processes: pipes,
 // background jobs and signals work, and output streams as it is
-// written. The Worker shell's `assets` and `artifacts` commands are
-// built in (./workspace-commands.ts); other programs beyond BusyBox
+// written. The Worker shell's `git`, `assets` and `artifacts` commands
+// are built in (./workspace-commands.ts); other programs beyond BusyBox
 // come from toolsets the caller installs and passes in, such as
 // @cloudflare/kitebuild-git-applet.
 
@@ -80,7 +80,7 @@ export class KitebuildBackend implements WorkspaceBackend {
     );
     const more =
       extra.length > 0 ? `, plus ${extra.join(", ")}.` : ". Cannot run binaries outside that set.";
-    this.description = `A BusyBox Linux userland in the Workspace's Durable Object, with real processes, pipes, background jobs and signals, and output that streams as it is written. Workspace files are shared directly with the file tools. Has sh, awk, sed, grep, find, xargs, tar, gzip, xz, diff, patch, vi, wget and the rest of BusyBox, and the assets and artifacts commands${more}`;
+    this.description = `A BusyBox Linux userland in the Workspace's Durable Object, with real processes, pipes, background jobs and signals, and output that streams as it is written. Workspace files are shared directly with the file tools. Has sh, awk, sed, grep, find, xargs, tar, gzip, xz, diff, patch, vi, wget and the rest of BusyBox, and git, assets and artifacts commands backed by the Workspace${more}`;
   }
 
   async connect(host: WorkspaceBackendHost): Promise<BackendHandle> {

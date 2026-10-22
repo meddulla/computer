@@ -134,6 +134,51 @@ describe("KitebuildBackend", () => {
     expect(await stub.replayError("run-4")).toBe("ENOENT");
   });
 
+  describe("git", () => {
+    const identity = {
+      GIT_AUTHOR_NAME: "Ada",
+      GIT_AUTHOR_EMAIL: "ada@example.com",
+      GIT_COMMITTER_NAME: "Ada",
+      GIT_COMMITTER_EMAIL: "ada@example.com",
+    };
+
+    it("runs the Workspace's git client by default", async () => {
+      const stub = host();
+      const result = await stub.exec(
+        "mkdir repo && cd repo && git init >/dev/null && echo hi > a.txt && git add a.txt && " +
+          "git commit -m first >/dev/null && git log --oneline | wc -l && test -f .git/HEAD && echo has-head",
+        { cwd: "/workspace", env: identity },
+      );
+      expect(result).toMatchObject({ exitCode: 0, stdout: "1\nhas-head\n" });
+      expect(await stub.readFile("/workspace/repo/.git/HEAD")).toMatch(/^ref: refs\/heads\//);
+    });
+
+    it("commits files the same command wrote", async () => {
+      const result = await host().exec(
+        "mkdir r && cd r && git init >/dev/null && printf 'one\\ntwo\\n' > notes.txt && " +
+          "git add notes.txt && git commit -m notes >/dev/null && git log --oneline | grep -c notes && " +
+          "echo three >> notes.txt && git status",
+        { cwd: "/workspace", env: identity },
+      );
+      expect(result.exitCode).toBe(0);
+      // The second line comes from git seeing the shell's unsaved append.
+      expect(result.stdout).toMatch(/^1\n.*notes\.txt/s);
+    });
+
+    it("reports a Workspace without git", async () => {
+      const result = await host().exec("git status", { backend: "nogit", cwd: "/workspace" });
+      expect(result).toMatchObject({
+        exitCode: 1,
+        stderr: "git: Workspace git is not configured.\n",
+      });
+    });
+
+    it("can be replaced by a toolset", async () => {
+      const result = await host().exec("git status", { backend: "gateway" });
+      expect(result).toMatchObject({ exitCode: 0, stdout: "replaced /usr/bin/git\n" });
+    });
+  });
+
   it("runs programs from a toolset with its extras", async () => {
     expect((await host().exec("greet world")).stdout).toBe("hello world\n");
   });
@@ -187,7 +232,7 @@ describe("KitebuildBackend", () => {
 
     it("can be replaced by a toolset", async () => {
       const result = await host().exec("assets publish /workspace/out.txt", { backend: "gateway" });
-      expect(result).toMatchObject({ exitCode: 0, stdout: "replaced\n" });
+      expect(result).toMatchObject({ exitCode: 0, stdout: "replaced /usr/bin/assets\n" });
     });
 
     it("prints usage for bad arguments", async () => {

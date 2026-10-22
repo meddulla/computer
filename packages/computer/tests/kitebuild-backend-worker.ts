@@ -14,6 +14,7 @@ import type { JsProgramCtx, Toolset } from "@cloudflare/kitebuild-core";
 import type { ArtifactsCLIInput, ArtifactsCLIResult } from "../src/artifacts/index";
 import type { WorkspaceBackend } from "../src/backend";
 import { KitebuildBackend } from "../src/backends/kitebuild/index";
+import { createGitClient } from "../src/git/index";
 import type { GitCliInput, GitCliResult } from "../src/git/index";
 import { Workspace } from "../src/index";
 
@@ -58,17 +59,15 @@ const greeter: Toolset = {
 
 // A toolset that replaces the built-in `assets` command.
 const replacement: Toolset = {
-  programs: [
-    {
-      path: "/usr/bin/assets",
-      abi: "js",
-      main: (ctx: JsProgramCtx) => {
-        const bytes = new TextEncoder().encode("replaced\n");
-        writeFdBytes(ctx.proc.fdt, 1, bytes, 0, bytes.length);
-        return 0;
-      },
+  programs: ["/usr/bin/assets", "/usr/bin/git"].map((path) => ({
+    path,
+    abi: "js" as const,
+    main: (ctx: JsProgramCtx) => {
+      const bytes = new TextEncoder().encode(`replaced ${path}\n`);
+      writeFdBytes(ctx.proc.fdt, 1, bytes, 0, bytes.length);
+      return 0;
     },
-  ],
+  })),
 };
 
 export interface Published {
@@ -117,8 +116,21 @@ export class HostDO extends DurableObject<Env> {
           git: this.#fakeGit() as never,
         }),
     };
+    const nogit = new KitebuildBackend({ id: "nogit" });
+    const withoutGit: WorkspaceBackend = {
+      id: nogit.id,
+      type: nogit.type,
+      connect: (host) =>
+        nogit.connect({
+          ...host,
+          git: {
+            cli: () => Promise.reject(new Error("Workspace git is not configured.")),
+          } as never,
+        }),
+    };
     return new Workspace({
       storage: this.ctx.storage,
+      git: createGitClient(),
       assets: {
         share: async (path, { expiresAfter }) => {
           const body = await this.#workspace.fs.readFile(path, "utf8");
@@ -134,6 +146,7 @@ export class HostDO extends DurableObject<Env> {
           egress: { mode: "http-gateway", gateway: this.ctx.exports.Gateway({}) },
         }),
         withFakes,
+        withoutGit,
       ],
     });
   }

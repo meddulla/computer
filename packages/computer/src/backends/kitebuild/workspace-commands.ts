@@ -1,4 +1,4 @@
-// The Worker shell's `assets` and `artifacts` commands, as JS programs
+// The Worker shell's `git`, `assets` and `artifacts` commands, as JS programs
 // on a Kitebuild machine. Both call clients on the Workspace host, which
 // read and write the Workspace store outside the machine, so the
 // programs commit the machine's buffered writes first and apply what
@@ -12,6 +12,7 @@ import {
   type CommandResult,
   runArtifactsCommand,
   runAssetsCommand,
+  runGitCommand,
 } from "../workspace-commands";
 
 export interface WorkspaceCommandsHost {
@@ -27,7 +28,30 @@ export function workspacePrograms({
   flush,
   refreshAfter,
 }: WorkspaceCommandsHost): ProgramSpec[] {
+  // Commit the machine's writes, run `call` against the host, and apply
+  // whatever it changed in the store to the mounts.
+  const throughHost = async (call: () => Promise<CommandResult>): Promise<CommandResult> => {
+    flush();
+    const before = currentRev(host.db);
+    const result = await call();
+    if (currentRev(host.db) !== before) await refreshAfter(before);
+    return result;
+  };
+
   return [
+    {
+      // The Workspace's git client by default; a git toolset, such as
+      // @cloudflare/kitebuild-git-applet's, registers after and replaces it.
+      path: "/usr/bin/git",
+      abi: "js",
+      main: async (ctx) =>
+        write(
+          ctx,
+          await throughHost(() =>
+            runGitCommand(host.git, ctx.argv.slice(1), ctx.proc.cwd, environment(ctx.envp)),
+          ),
+        ),
+    },
     {
       path: "/usr/bin/assets",
       abi: "js",
@@ -46,16 +70,10 @@ export function workspacePrograms({
       path: "/usr/bin/artifacts",
       abi: "js",
       main: async (ctx) => {
-        flush();
         // The create shorthand adds a git remote through the host.
-        const before = currentRev(host.db);
-        const result = await runArtifactsCommand(
-          host,
-          ctx.argv.slice(1),
-          ctx.proc.cwd,
-          environment(ctx.envp),
+        const result = await throughHost(() =>
+          runArtifactsCommand(host, ctx.argv.slice(1), ctx.proc.cwd, environment(ctx.envp)),
         );
-        if (currentRev(host.db) !== before) await refreshAfter(before);
         return write(ctx, result);
       },
     },
