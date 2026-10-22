@@ -37,8 +37,13 @@ export interface WorkspaceMountOptions {
 export interface WorkspaceMount {
   /** Release every open write buffer, committing it to the store. */
   flush(): void;
-  /** Drop the loaded tree and cached bodies, so the next look reloads. */
-  reset(): void;
+  /**
+   * Bring the loaded tree up to date with Workspace paths that changed
+   * outside the machine. Nodes keep their identity, so descriptors a
+   * running process holds stay usable; directories not yet loaded are
+   * left alone, since they load fresh.
+   */
+  refresh(changed: Iterable<string>): void;
 }
 
 type Provider = Pick<
@@ -287,8 +292,12 @@ export function mountWorkspace(
     });
   };
 
+  /** Directories whose children have been read, so refresh must update them. */
+  const loaded = new WeakSet<FsNode>();
+
   const loadChildren = (dir: FsNode): Array<readonly [string, FsNode]> => {
     const dirPath = pathOf(dir);
+    loaded.add(dir);
     return provider
       .readdirStatsSync(dirPath)
       .map((entry) => [entry.name, makeNode(join(dirPath, entry.name), entry)] as const);
@@ -328,7 +337,10 @@ export function mountWorkspace(
         else if (type === "symlink") provider.symlinkSync(link ?? "", nodePath);
         else provider.writeFileSync(nodePath, asBuffer(contents ?? new Uint8Array(0)), { mode });
         const node = nodeAt(nodePath);
-        if (node.children instanceof LazyChildren) node.children = new Map();
+        if (node.children instanceof LazyChildren) {
+          node.children = new Map();
+          loaded.add(node);
+        }
         return node;
       } catch (error) {
         return errnoOf(error);
@@ -405,20 +417,69 @@ export function mountWorkspace(
   const siblings = vfs.stat(parentPath)?.children;
   if (siblings === undefined) throw new Error(`KitebuildBackend: no directory ${parentPath}`);
 
-  const attach = (): void => {
-    siblings.set(name, nodeAt(normalized));
+  const root = nodeAt(normalized);
+  siblings.set(name, root);
+
+  // The loaded directory holding `changed`, or undefined when the path
+  // is outside the mount or under a directory not yet loaded.
+  const loadedParent = (changed: string): FsNode | undefined => {
+    if (!changed.startsWith(`${normalized}/`)) return undefined;
+    const parts = changed.slice(normalized.length + 1).split("/");
+    let dir: FsNode | undefined = root;
+    for (const part of parts.slice(0, -1)) {
+      if (dir === undefined || !loaded.has(dir)) return undefined;
+      dir = dir.children?.get(part);
+    }
+    return dir !== undefined && loaded.has(dir) ? dir : undefined;
   };
-  attach();
+
+  const refreshOne = (changed: string): void => {
+    const dir = loadedParent(changed);
+    if (dir?.children === undefined) return;
+    const entry = changed.slice(changed.lastIndexOf("/") + 1);
+    const current = dir.children.get(entry);
+    let stat: ReturnType<Provider["lstatSync"]> | undefined;
+    try {
+      stat = provider.lstatSync(changed);
+    } catch (error) {
+      if ((error as { code?: unknown }).code !== "ENOENT") throw error;
+    }
+    if (stat === undefined) {
+      if (current !== undefined) {
+        uncache(current);
+        dir.children.delete(entry);
+      }
+      return;
+    }
+    const type = stat.isDirectory() ? "dir" : stat.isSymbolicLink() ? "symlink" : "reg";
+    // The node already loaded for this path, or one the mount created
+    // itself and has not learnt the inode of.
+    if (
+      current?.type === type &&
+      (current.ino === INODE_BASE + stat.ino || current.ino >= PENDING_INODE_BASE)
+    ) {
+      current.mode = TYPE_BITS[type] | (stat.mode & 0o7777);
+      current.mtime = Math.floor(stat.mtimeMs / 1000);
+      current.nlink = stat.nlink;
+      if (type === "reg" && current.body instanceof Body && !buffered.has(current)) {
+        uncache(current);
+        current.body.size = stat.size;
+      }
+      if (type === "symlink") current.link = provider.readlinkSync(changed);
+      return;
+    }
+    if (current !== undefined) uncache(current);
+    dir.children.set(entry, nodeAt(changed));
+  };
 
   return {
     flush: releaseAll,
-    reset() {
-      releaseAll();
-      paths.clear();
-      byInode.clear();
-      cache.clear();
-      cachedBytes = 0;
-      attach();
+    refresh(changed) {
+      // Parents first, so a new directory is in place before its entries.
+      const ordered = [...new Set(changed)].sort(
+        (a, b) => a.split("/").length - b.split("/").length,
+      );
+      for (const one of ordered) refreshOne(one);
     },
   };
 }

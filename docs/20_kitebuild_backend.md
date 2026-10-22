@@ -61,7 +61,7 @@ new KitebuildBackend({ tools: [git()] });
 The machine has the Worker shell's `assets` and `artifacts` commands, with the same arguments, output and messages. See [Assets](./14_assets_interface.md) and [Artifacts](./15_artifacts_interface.md).
 
 - `assets publish <path> [<expiry>]` publishes a file through the Workspace's assets client and prints the URL. Files the command wrote are committed first, so a file written earlier in the same command is published as it is now. Without an assets client it prints `assets: publishing is not configured for this workspace` and exits 1.
-- `artifacts ...` forwards its arguments and environment to the Workspace's Artifacts client. `artifacts create` adds its git remote through the Workspace's git client, outside the machine. The rest of the command sees the change when no other command is running; otherwise it appears at the next command.
+- `artifacts ...` forwards its arguments and environment to the Workspace's Artifacts client. `artifacts create` adds its git remote through the Workspace's git client, outside the machine; the rest of the command sees the change straight away, and files the command already has open stay usable.
 
 There is no built-in `git`; pass a git toolset to get one. A toolset program at `/usr/bin/assets` or `/usr/bin/artifacts` replaces the built-in command.
 
@@ -69,7 +69,7 @@ There is no built-in `git`; pass a git toolset to get one. A toolset program at 
 
 Paths are the same on both sides: the agent's `/workspace/x` is the shell's `/workspace/x`. Outside `paths`, `/bin` and `/etc` come from the initramfs and `/tmp` is in memory.
 
-Writes from the shell land in the Workspace when the command ends: a new file's row, bytes and mode are committed in one transaction, and up to 16 files are held in dofs write buffers while a command writes them. Writes from the agent made between commands are picked up at the start of the next one. Writes the agent makes while a command runs are not visible to that command.
+Writes from the shell land in the Workspace when the command ends: a new file's row, bytes and mode are committed in one transaction, and up to 16 files are held in dofs write buffers while a command writes them. Writes from the agent made between commands are applied to the machine's tree at the start of the next one, without dropping its cache. Writes the agent makes while a command runs are not visible to that command.
 
 Two behaviours differ from Linux because dofs addresses file bytes by path. A file renamed over or unlinked while a process holds it open can no longer be read through that descriptor, and a write to it fails.
 

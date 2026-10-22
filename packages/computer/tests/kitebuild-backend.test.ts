@@ -201,7 +201,7 @@ describe("KitebuildBackend", () => {
       });
     });
 
-    it("shows the remote at the next command when another is running", async () => {
+    it("shows the remote at once while another command is running", async () => {
       const stub = host();
       await stub.writeFile("/workspace/repo/remotes.txt", "none\n");
       const [, during] = await stub.overlapping(
@@ -209,12 +209,18 @@ describe("KitebuildBackend", () => {
         "cat remotes.txt && artifacts create demo && cat remotes.txt",
         { backend: "fakes", cwd: "/workspace/repo" },
       );
-      expect(during.stdout).toBe("none\ncreated demo\nnone\n");
-      const after = await stub.exec("cat remotes.txt", {
-        backend: "fakes",
-        cwd: "/workspace/repo",
-      });
-      expect(after.stdout).toBe("origin https://x/repo.git\n");
+      expect(during.stdout).toBe("none\ncreated demo\norigin https://x/repo.git\n");
+    });
+
+    it("keeps a descriptor opened before the change writable", async () => {
+      const stub = host();
+      await stub.writeFile("/workspace/repo/remotes.txt", "none\n");
+      const result = await stub.exec(
+        "{ echo before; artifacts create demo; echo after; } > log.txt; cat log.txt",
+        { backend: "fakes", cwd: "/workspace/repo" },
+      );
+      expect(result).toMatchObject({ exitCode: 0, stdout: "before\ncreated demo\nafter\n" });
+      expect(await stub.readFile("/workspace/repo/log.txt")).toBe("before\ncreated demo\nafter\n");
     });
   });
 });

@@ -137,17 +137,49 @@ describe("mountWorkspace", () => {
     expect(read(vfs, "/workspace/f")).toBe("Cached");
   });
 
-  it("sees Workspace changes after reset", async () => {
+  it("applies Workspace changes to the loaded tree on refresh", async () => {
     const { fs, provider } = store();
     await fs.writeFile("/workspace/seen", "x");
+    await fs.writeFile("/workspace/gone", "x");
     const { vfs, mount } = mounted(provider);
-    expect(vfs.stat("/workspace/seen")).not.toBeNull();
+    const seen = node(vfs, "/workspace/seen");
+    expect(vfs.stat("/workspace/gone")).not.toBeNull();
     await fs.writeFile("/workspace/later", "y");
     await fs.writeFile("/workspace/seen", "longer");
+    await fs.rm("/workspace/gone");
     expect(vfs.stat("/workspace/later")).toBeNull();
-    mount.reset();
+    mount.refresh(["/workspace/later", "/workspace/seen", "/workspace/gone", "/elsewhere"]);
     expect(read(vfs, "/workspace/later")).toBe("y");
     expect(read(vfs, "/workspace/seen")).toBe("longer");
+    expect(vfs.stat("/workspace/gone")).toBeNull();
+    // The same node, so a descriptor already holding it keeps working.
+    expect(node(vfs, "/workspace/seen")).toBe(seen);
+  });
+
+  it("keeps a file it created itself across a refresh", async () => {
+    const { fs, provider } = store();
+    const { vfs, mount } = mounted(provider);
+    vfs.writeFile("/workspace/own", new Uint8Array(0));
+    const own = node(vfs, "/workspace/own");
+    body(vfs, "/workspace/own").writeFrom(text("mine"), 0);
+    mount.flush();
+    await fs.writeFile("/workspace/other", "theirs");
+    mount.refresh(["/workspace/own", "/workspace/other"]);
+    expect(node(vfs, "/workspace/own")).toBe(own);
+    body(vfs, "/workspace/own").writeFrom(text("!"), 4);
+    mount.flush();
+    expect(await fs.readFile("/workspace/own", "utf8")).toBe("mine!");
+    expect(read(vfs, "/workspace/other")).toBe("theirs");
+  });
+
+  it("adds a directory created outside, and leaves unloaded ones alone", async () => {
+    const { fs, provider } = store();
+    const { vfs, mount } = mounted(provider);
+    expect(vfs.stat("/workspace")?.children?.size).toBe(0);
+    await fs.mkdir("/workspace/d/e", { recursive: true });
+    await fs.writeFile("/workspace/d/e/f", "deep");
+    mount.refresh(["/workspace/d", "/workspace/d/e", "/workspace/d/e/f"]);
+    expect(read(vfs, "/workspace/d/e/f")).toBe("deep");
   });
 
   it("returns Linux errno values", () => {

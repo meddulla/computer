@@ -12,7 +12,7 @@
 // @cloudflare/kitebuild-git-applet.
 
 import type { ExecEvent, ShellRPC, SyncRPC, WorkspaceRPC } from "@cloudflare/computer-rpc";
-import { currentRev, SQLiteWorkspaceProvider } from "@cloudflare/dofs";
+import { coalesceChanges, currentRev, SQLiteWorkspaceProvider } from "@cloudflare/dofs";
 import {
   type EgressPolicy,
   type FsNode,
@@ -106,9 +106,6 @@ class KitebuildRuntime {
   readonly #execs = new Map<string, ExecLog>();
   #running = 0;
   #rev: number;
-  // Set when the store changed under a running command and the mounts
-  // could not reload then; the next command reloads them.
-  #stale = false;
 
   constructor(host: WorkspaceBackendHost, options: KitebuildBackendOptions) {
     this.#host = host;
@@ -125,7 +122,7 @@ class KitebuildRuntime {
             flush: () => {
               for (const mount of this.#mounts) mount.flush();
             },
-            reload: () => this.#reload(),
+            refreshAfter: (since) => this.#refresh(since),
           }),
           ...tools.flatMap((tool) => tool.programs),
         ],
@@ -147,7 +144,7 @@ class KitebuildRuntime {
 
   shell(): ShellRPC {
     return {
-      exec: async (input) => this.#exec(input),
+      exec: (input) => this.#exec(input),
       getExec: async ({ id, after }) => ({ id, events: this.#stream(this.#log(id), after) }),
       killExec: async ({ id, signal }) => {
         const log = this.#log(id);
@@ -168,19 +165,23 @@ class KitebuildRuntime {
     for (const mount of this.#mounts) mount.flush();
   }
 
-  #exec(input: Parameters<ShellRPC["exec"]>[0]): { id: string; events: ReadableStream<ExecEvent> } {
+  async #exec(
+    input: Parameters<ShellRPC["exec"]>[0],
+  ): Promise<{ id: string; events: ReadableStream<ExecEvent> }> {
+    // Pick up Workspace writes made outside the machine since the last
+    // look. The tree keeps its nodes, so running commands are unaffected.
+    const rev = currentRev(this.#host.db);
+    if (rev !== this.#rev) {
+      const since = this.#rev;
+      this.#rev = rev;
+      await this.#refresh(since);
+    }
+
     const id = input.id ?? crypto.randomUUID();
     if (this.#execs.get(id)?.done === false)
       throw shellError("EEXEC_BUSY", `exec ${id} is already running`);
     if (this.#running >= this.#maxExecs) {
       throw shellError("EEXEC_BUSY", `${this.#running} commands are already running`);
-    }
-
-    // Pick up Workspace writes made outside the machine since the last
-    // command. Only between commands, so a running one keeps its tree.
-    if (this.#running === 0 && (this.#stale || currentRev(this.#host.db) !== this.#rev)) {
-      for (const mount of this.#mounts) mount.reset();
-      this.#stale = false;
     }
 
     const log: ExecLog = { events: [], done: false, listeners: new Set() };
@@ -240,14 +241,11 @@ class KitebuildRuntime {
     return { id, events: this.#stream(log, undefined) };
   }
 
-  // Reload the mounts for a program that wrote the store through the
-  // host, if its own command is the only one running.
-  #reload(): void {
-    if (this.#running === 1) {
-      for (const mount of this.#mounts) mount.reset();
-    } else {
-      this.#stale = true;
-    }
+  // Apply every Workspace path changed after `since` to the mounts.
+  async #refresh(since: number): Promise<void> {
+    const changed: string[] = [];
+    for await (const entry of coalesceChanges(this.#host.db, since)) changed.push(entry.path);
+    for (const mount of this.#mounts) mount.refresh(changed);
   }
 
   #log(id: string): ExecLog {

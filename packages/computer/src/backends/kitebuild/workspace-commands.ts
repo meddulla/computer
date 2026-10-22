@@ -1,9 +1,10 @@
 // The Worker shell's `assets` and `artifacts` commands, as JS programs
 // on a Kitebuild machine. Both call clients on the Workspace host, which
 // read and write the Workspace store outside the machine, so the
-// programs commit the machine's buffered writes first and reload the
-// mounts after a call that writes.
+// programs commit the machine's buffered writes first and apply what
+// the call changed to the mounts afterwards.
 
+import { currentRev } from "@cloudflare/dofs";
 import { type JsProgramCtx, type ProgramSpec, writeFdBytes } from "@cloudflare/kitebuild-core";
 
 import type { WorkspaceBackendHost } from "../../backend";
@@ -17,11 +18,15 @@ export interface WorkspaceCommandsHost {
   readonly host: WorkspaceBackendHost;
   /** Commit the mounts' buffered writes to the Workspace store. */
   flush(): void;
-  /** Show the store's current contents to commands, now or at the next one. */
-  reload(): void;
+  /** Apply Workspace paths changed after store revision `since` to the mounts. */
+  refreshAfter(since: number): Promise<void>;
 }
 
-export function workspacePrograms({ host, flush, reload }: WorkspaceCommandsHost): ProgramSpec[] {
+export function workspacePrograms({
+  host,
+  flush,
+  refreshAfter,
+}: WorkspaceCommandsHost): ProgramSpec[] {
   return [
     {
       path: "/usr/bin/assets",
@@ -41,11 +46,16 @@ export function workspacePrograms({ host, flush, reload }: WorkspaceCommandsHost
       path: "/usr/bin/artifacts",
       abi: "js",
       main: async (ctx) => {
-        const args = ctx.argv.slice(1);
         flush();
-        const result = await runArtifactsCommand(host, args, ctx.proc.cwd, environment(ctx.envp));
         // The create shorthand adds a git remote through the host.
-        if (args[0] === "create") reload();
+        const before = currentRev(host.db);
+        const result = await runArtifactsCommand(
+          host,
+          ctx.argv.slice(1),
+          ctx.proc.cwd,
+          environment(ctx.envp),
+        );
+        if (currentRev(host.db) !== before) await refreshAfter(before);
         return write(ctx, result);
       },
     },
