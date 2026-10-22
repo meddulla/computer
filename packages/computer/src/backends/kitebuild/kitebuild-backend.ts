@@ -130,7 +130,14 @@ class KitebuildRuntime {
     const tools = [
       ...(gitOption === "workspace"
         ? []
-        : [kitebuildGit(gitOption === "kitebuild" ? {} : { fetch: gitOption.fetch })]),
+        : [
+            // Pushing is allowed, as with the Workspace's git client; credentials
+            // come from the environment or from the caller's fetch.
+            kitebuildGit({
+              push: true,
+              ...(gitOption === "kitebuild" ? {} : { fetch: gitOption.fetch }),
+            }),
+          ]),
       ...(options.tools ?? []),
     ];
     this.#machine = new Machine({

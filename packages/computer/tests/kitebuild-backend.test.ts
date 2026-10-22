@@ -176,6 +176,21 @@ describe("KitebuildBackend", () => {
       ]);
     });
 
+    it("pushes through the given fetch", async () => {
+      const stub = host();
+      const result = await stub.exec(
+        "git init -q r && cd r && echo hi > a && git add a && git commit -q -m first >/dev/null && " +
+          "git remote add origin https://git.example.test/repo.git && git push -u origin main",
+        { backend: "gitfetch", cwd: "/workspace", env: identity },
+      );
+      // The fake remote answers 404, so the push fails after asking to receive.
+      expect(result.exitCode).not.toBe(0);
+      expect(result.stderr).not.toContain("not available");
+      expect(await stub.gitFetchRequests()).toEqual([
+        "https://git.example.test/repo.git/info/refs?service=git-receive-pack",
+      ]);
+    });
+
     it("runs the Workspace's git client when asked", async () => {
       const stub = host();
       const result = await stub.exec(
