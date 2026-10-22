@@ -101,7 +101,37 @@ describe("KitebuildBackend", () => {
   it("replays a finished execution by id", async () => {
     const stub = host();
     await stub.exec("echo kept", { id: "run-1" });
-    expect(await stub.replay("run-1")).toBe("kept\n");
+    expect((await stub.replay("run-1")).stdout).toBe("kept\n");
+  });
+
+  it("replays a finished execution after the Durable Object restarts", async () => {
+    const stub = host();
+    await stub.exec("echo kept; echo warned >&2; exit 3", { id: "run-2" });
+    await stub.restart();
+    expect(await stub.replay("run-2")).toMatchObject({
+      exitCode: 3,
+      stdout: "kept\n",
+      stderr: "warned\n",
+    });
+  });
+
+  it("settles a command the restart interrupted as failed", async () => {
+    const stub = host();
+    await stub.start("echo started; sleep 30", "run-3");
+    await stub.restart();
+    expect(await stub.replay("run-3")).toMatchObject({
+      exitCode: 1,
+      stdout: "started\n",
+      stderr: "kitebuild: the command stopped when its Durable Object restarted\n",
+    });
+  });
+
+  it("forgets a disposed execution, including after a restart", async () => {
+    const stub = host();
+    await stub.exec("echo gone", { id: "run-4" });
+    await stub.dispose("run-4");
+    await stub.restart();
+    expect(await stub.replayError("run-4")).toBe("ENOENT");
   });
 
   it("runs programs from a toolset with its extras", async () => {

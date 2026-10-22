@@ -26,6 +26,7 @@ import INITRAMFS from "@cloudflare/kitebuild-core/artifacts/initramfs.wasm";
 
 import type { BackendHandle, WorkspaceBackend, WorkspaceBackendHost } from "../../backend";
 import type { WorkspaceEgressPolicy } from "../../runtime/egress";
+import { ExecJournal } from "./exec-journal";
 import { workspacePrograms } from "./workspace-commands";
 import { mountWorkspace, type WorkspaceMount } from "./workspace-mount";
 
@@ -83,7 +84,7 @@ export class KitebuildBackend implements WorkspaceBackend {
   }
 
   async connect(host: WorkspaceBackendHost): Promise<BackendHandle> {
-    const runtime = new KitebuildRuntime(host, this.#options);
+    const runtime = new KitebuildRuntime(this.id, host, this.#options);
     const rpc: WorkspaceRPC = { sync: refuseSync(), shell: runtime.shell() };
     return { rpc, sync: "none", close: async () => runtime.close() };
   }
@@ -104,11 +105,13 @@ class KitebuildRuntime {
   readonly #env: Record<string, string>;
   readonly #maxExecs: number;
   readonly #execs = new Map<string, ExecLog>();
+  readonly #journal: ExecJournal;
   #running = 0;
   #rev: number;
 
-  constructor(host: WorkspaceBackendHost, options: KitebuildBackendOptions) {
+  constructor(backendId: string, host: WorkspaceBackendHost, options: KitebuildBackendOptions) {
     this.#host = host;
+    this.#journal = new ExecJournal(host.db, backendId);
     this.#env = { ...DEFAULT_ENV, ...options.env };
     this.#maxExecs = options.maxExecs ?? 4;
     const tools = options.tools ?? [];
@@ -153,7 +156,9 @@ class KitebuildRuntime {
       },
       disposeExec: async ({ id }) => {
         const log = this.#execs.get(id);
-        if (log?.done) this.#execs.delete(id);
+        if (log?.done === false) return;
+        this.#execs.delete(id);
+        this.#journal.dispose(id);
       },
     };
   }
@@ -187,9 +192,11 @@ class KitebuildRuntime {
     const log: ExecLog = { events: [], done: false, listeners: new Set() };
     this.#execs.set(id, log);
     this.#retain();
+    this.#journal.start(id);
     let seq = 0;
     const emit = (event: ExecEvent): void => {
       log.events.push(event);
+      this.#journal.append(event);
       for (const listener of log.listeners) listener();
     };
     const output = (name: "stdout" | "stderr") =>
@@ -236,6 +243,7 @@ class KitebuildRuntime {
       if (this.#running === 0) this.#rev = currentRev(this.#host.db);
       log.done = true;
       emit({ id, seq: ++seq, name: "exit", code: exitCode });
+      this.#journal.finish(id, exitCode);
     });
 
     return { id, events: this.#stream(log, undefined) };
@@ -248,10 +256,14 @@ class KitebuildRuntime {
     for (const mount of this.#mounts) mount.refresh(changed);
   }
 
+  // An execution from memory, or replayed from the journal after the
+  // Durable Object restarted.
   #log(id: string): ExecLog {
     const log = this.#execs.get(id);
-    if (log === undefined) throw shellError("ENOENT", `no such exec: ${id}`);
-    return log;
+    if (log !== undefined) return log;
+    const events = this.#journal.load(id);
+    if (events === undefined) throw shellError("ENOENT", `no such exec: ${id}`);
+    return { events, done: true, listeners: new Set() };
   }
 
   #stream(log: ExecLog, after: number | "tail" | undefined): ReadableStream<ExecEvent> {
@@ -290,6 +302,7 @@ class KitebuildRuntime {
     const finished = [...this.#execs].filter(([, log]) => log.done);
     for (const [id] of finished.slice(0, Math.max(0, finished.length - RETAINED_EXECS)))
       this.#execs.delete(id);
+    this.#journal.prune();
   }
 }
 

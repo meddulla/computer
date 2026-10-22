@@ -89,12 +89,22 @@ export class Gateway extends WorkerEntrypoint {
 }
 
 export class HostDO extends DurableObject<Env> {
-  readonly #workspace: Workspace;
+  #workspace: Workspace;
   readonly published: Published[] = [];
   readonly artifactsCalls: ArtifactsCall[] = [];
 
   constructor(ctx: DurableObjectState, env: Env) {
     super(ctx, env);
+    this.#workspace = this.#createWorkspace();
+  }
+
+  // A fresh Workspace and backends over the same storage, as after the
+  // Durable Object restarts. The old instance is abandoned, not closed.
+  restart(): void {
+    this.#workspace = this.#createWorkspace();
+  }
+
+  #createWorkspace(): Workspace {
     const fakes = new KitebuildBackend({ id: "fakes" });
     const withFakes: WorkspaceBackend = {
       id: fakes.id,
@@ -107,8 +117,8 @@ export class HostDO extends DurableObject<Env> {
           git: this.#fakeGit() as never,
         }),
     };
-    this.#workspace = new Workspace({
-      storage: ctx.storage,
+    return new Workspace({
+      storage: this.ctx.storage,
       assets: {
         share: async (path, { expiresAfter }) => {
           const body = await this.#workspace.fs.readFile(path, "utf8");
@@ -121,7 +131,7 @@ export class HostDO extends DurableObject<Env> {
         new KitebuildBackend({
           id: "gateway",
           tools: [replacement],
-          egress: { mode: "http-gateway", gateway: ctx.exports.Gateway({}) },
+          egress: { mode: "http-gateway", gateway: this.ctx.exports.Gateway({}) },
         }),
         withFakes,
       ],
@@ -239,9 +249,42 @@ export class HostDO extends DurableObject<Env> {
     };
   }
 
-  async replay(id: string): Promise<string> {
-    using handle = await this.#workspace.runtime.getExec(id, { resume: "full", encoding: "utf8" });
-    return (await handle.result()).stdout;
+  // The error code when the execution is not found. Errors are returned
+  // rather than thrown, since a rejected Durable Object call is also
+  // reported as an uncaught rejection inside the object.
+  async replayError(id: string): Promise<string | undefined> {
+    try {
+      await this.replay(id);
+      return undefined;
+    } catch (error) {
+      return String((error as { code?: unknown }).code);
+    }
+  }
+
+  async replay(id: string, backend?: string): Promise<ExecResult> {
+    using handle = await this.#workspace.runtime.getExec(id, {
+      resume: "full",
+      encoding: "utf8",
+      ...(backend === undefined ? {} : { backend }),
+    });
+    const result = await handle.result();
+    return {
+      status: result.status,
+      exitCode: result.exitCode,
+      stdout: result.stdout,
+      stderr: result.stderr,
+    };
+  }
+
+  async start(command: string, id: string): Promise<void> {
+    const handle = await this.#workspace.runtime.exec(command, { id, encoding: "utf8" });
+    // Let the process start before the caller restarts the object.
+    await new Promise((resolve) => setTimeout(resolve, 200));
+    handle[Symbol.dispose]();
+  }
+
+  async dispose(id: string): Promise<void> {
+    await this.#workspace.runtime.disposeExec(id);
   }
 }
 

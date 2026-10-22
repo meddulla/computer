@@ -87,4 +87,4 @@ JS programs that call `fetch` themselves are outside the machine's policy; a too
 
 The machine shares the Durable Object's memory with the agent. Each process commits its own wasm memory, so keep `maxExecs` and `cacheBytes` modest. There are no listening sockets, and UDP other than DNS fails.
 
-`getExec` replays an execution while the Durable Object stays in memory. The last 64 finished executions are kept; after an eviction an id is no longer found.
+`getExec` replays an execution from the Workspace database, so a run can be reattached after the Durable Object restarts. The last 64 finished executions are kept for up to an hour, with up to 8 MiB of output each. A command still running when the object restarts is lost with its machine, and replays as failed with exit code 1.
