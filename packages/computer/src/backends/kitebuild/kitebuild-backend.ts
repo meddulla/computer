@@ -6,7 +6,7 @@
 // mounts the Workspace store directly (./workspace-mount.ts), so the
 // handle declares sync: "none". Commands are real processes: pipes,
 // background jobs and signals work, and output streams as it is
-// written. `git` is Kitebuild's git applet by default, working on the
+// written. `git` is Kitebuild's git by default, working on the
 // machine's own files, or the Workspace's git client when asked. The
 // Worker shell's `assets` and `artifacts` commands are built in
 // (./workspace-commands.ts); other programs beyond BusyBox come from
@@ -24,7 +24,7 @@ import {
 } from "@cloudflare/kitebuild-core";
 import BUSYBOX from "@cloudflare/kitebuild-core/artifacts/busybox.wasm";
 import INITRAMFS from "@cloudflare/kitebuild-core/artifacts/initramfs.wasm";
-import { git as kitebuildGit, type GitFetch } from "@cloudflare/kitebuild-git-applet";
+import { git as kitebuildGit, type GitFetch } from "@cloudflare/kitebuild-git";
 
 import type { BackendHandle, WorkspaceBackend, WorkspaceBackendHost } from "../../backend";
 import type { WorkspaceEgressPolicy } from "../../runtime/egress";
@@ -55,7 +55,7 @@ export interface KitebuildBackendOptions {
   maxExecs?: number;
   /**
    * Which `git` the shell has. "kitebuild" (the default) is Kitebuild's
-   * git applet, run on the machine's own files;
+   * git (@cloudflare/kitebuild-git), run on the machine's own files;
    * `{ fetch }` is the same with its HTTP requests sent through `fetch`,
    * to add credentials or apply an egress policy, since it otherwise
    * uses the global fetch. "workspace" is the Workspace's git client, as

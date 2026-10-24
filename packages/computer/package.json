@@ -173,7 +173,7 @@
   },
   "peerDependencies": {
     "@cloudflare/kitebuild-core": "^0.1.0",
-    "@cloudflare/kitebuild-git-applet": "^0.1.0",
+    "@cloudflare/kitebuild-git": "^0.1.0",
     "@cloudflare/workers-types": "^4.20260616.1 || ^5.20260921.1",
     "@platformatic/vfs": "*",
     "ai": "^6.0.196 || ^7.0.0",
@@ -185,7 +185,7 @@
     "@cloudflare/kitebuild-core": {
       "optional": true
     },
-    "@cloudflare/kitebuild-git-applet": {
+    "@cloudflare/kitebuild-git": {
       "optional": true
     },
     "@cloudflare/workers-types": {
@@ -211,7 +211,7 @@
     "@cloudflare/computer-rpc": "*",
     "@cloudflare/dofs": "*",
     "@cloudflare/kitebuild-core": "file:vendor/cloudflare-kitebuild-core-0.1.0.tgz",
-    "@cloudflare/kitebuild-git-applet": "file:vendor/cloudflare-kitebuild-git-applet-0.1.0.tgz",
+    "@cloudflare/kitebuild-git": "file:vendor/cloudflare-kitebuild-git-0.1.0.tgz",
     "@cloudflare/vite-plugin": "^1.63.0",
     "@cloudflare/vitest-pool-workers": "^0.22.0",
     "@cloudflare/workers-types": "^4.20260616.1 || ^5.20260921.1",

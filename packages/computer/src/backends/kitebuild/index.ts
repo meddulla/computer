@@ -7,7 +7,7 @@
 // userland, executed in the Workspace's own Durable Object with the
 // Workspace store mounted directly. Requires the optional peer
 // dependency @cloudflare/kitebuild-core; further programs come from
-// toolsets such as @cloudflare/kitebuild-git-applet.
+// toolsets such as @cloudflare/kitebuild-git.
 //
 // Imported via:
 //

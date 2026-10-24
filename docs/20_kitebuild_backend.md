@@ -9,7 +9,7 @@ It sits between the Worker shell, which starts fast but runs a fixed command set
 
 ## Setup
 
-`@cloudflare/kitebuild-core` and `@cloudflare/kitebuild-git-applet` are optional peer dependencies of `@cloudflare/computer`, needed by this backend. Install them next to it:
+`@cloudflare/kitebuild-core` and `@cloudflare/kitebuild-git` are optional peer dependencies of `@cloudflare/computer`, needed by this backend. Install them next to it:
 
 ```ts
 import { DurableObject } from "cloudflare:workers";
@@ -63,7 +63,7 @@ Some tools load their wasm only when first run, through `import.source()`, which
 
 ### git
 
-`git` is Kitebuild's git (`@cloudflare/kitebuild-git-applet`) by default: isomorphic-git working on the machine's own files, with busyworker's patches for large clones and checkouts. It covers `init`, `clone`, `status`, `log`, `add`, `commit`, `branch`, `checkout`, `remote`, `config`, `fetch`, `pull`, `push`, `apply`, `reset`, `cherry-pick`, `revert`, `blame` and more, and refuses options it does not support by name.
+`git` is Kitebuild's git (`@cloudflare/kitebuild-git`) by default: isomorphic-git working on the machine's own files, with busyworker's patches for large clones and checkouts. It covers `init`, `clone`, `status`, `log`, `add`, `commit`, `branch`, `checkout`, `remote`, `config`, `fetch`, `pull`, `push`, `apply`, `reset`, `cherry-pick`, `revert`, `blame` and more, and refuses options it does not support by name.
 
 `git push [-u] [-f] [<remote> [<src>[:<dst>]]]` is allowed, with credentials from the environment (for example `GITHUB_TOKEN`) or from your fetch. Its HTTP requests (clone, fetch, push) run in the Durable Object with the global `fetch`, so `egress` does not apply to them. Pass your own fetch to add credentials or apply a policy:
 
