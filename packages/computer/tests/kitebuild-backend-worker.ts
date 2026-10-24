@@ -148,7 +148,15 @@ export class HostDO extends DurableObject<Env> {
         withFakes,
         withoutGit,
         new KitebuildBackend({ id: "wsgit", git: "workspace" }),
-        new KitebuildBackend({ id: "gitfetch", git: { fetch: (input) => this.#gitFetch(input) } }),
+        new KitebuildBackend({
+          id: "gitfetch",
+          git: { fetch: (request, egressFetch) => this.#gitFetch(request, egressFetch) },
+        }),
+        new KitebuildBackend({
+          id: "gitgateway",
+          egress: { mode: "http-gateway", gateway: this.ctx.exports.Gateway({}) },
+          git: { fetch: (request, egressFetch) => this.#gitFetch(request, egressFetch) },
+        }),
       ],
     });
   }
@@ -185,16 +193,26 @@ export class HostDO extends DurableObject<Env> {
   }
 
   readonly gitRequests: string[] = [];
+  readonly gitResponses: string[] = [];
 
-  // Stands in for an embedder's fetch: records each request git makes and
-  // answers 404, so a clone fails after its first request.
-  async #gitFetch(input: RequestInfo | URL): Promise<Response> {
-    this.gitRequests.push(String(input instanceof Request ? input.url : input));
-    return new Response("not here", { status: 404 });
+  // Stands in for an embedder's fetch: records each request git makes, sends it
+  // on under the backend's egress policy, and records what came back.
+  async #gitFetch(
+    request: Request,
+    egressFetch: (request: Request) => Promise<Response>,
+  ): Promise<Response> {
+    this.gitRequests.push(request.url);
+    const response = await egressFetch(request);
+    this.gitResponses.push(await response.clone().text());
+    return response;
   }
 
   async gitFetchRequests(): Promise<string[]> {
     return this.gitRequests;
+  }
+
+  async gitFetchResponses(): Promise<string[]> {
+    return this.gitResponses;
   }
 
   async records(): Promise<{ published: Published[]; artifacts: ArtifactsCall[] }> {

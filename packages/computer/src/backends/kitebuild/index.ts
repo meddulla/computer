@@ -14,5 +14,9 @@
 //   import { KitebuildBackend } from "@cloudflare/computer/backends/kitebuild";
 
 export type { WorkspaceEgressPolicy } from "../../runtime/egress";
-export { KitebuildBackend, type KitebuildBackendOptions } from "./kitebuild-backend";
+export {
+  KitebuildBackend,
+  type KitebuildBackendOptions,
+  type KitebuildGitFetch,
+} from "./kitebuild-backend";
 export { mountWorkspace, type WorkspaceMount, type WorkspaceMountOptions } from "./workspace-mount";

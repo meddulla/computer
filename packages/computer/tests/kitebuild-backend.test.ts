@@ -164,30 +164,48 @@ describe("KitebuildBackend", () => {
       expect(result.stdout).toMatch(/modified:\s+notes\.txt/);
     });
 
-    it("sends Kitebuild's git HTTP through the given fetch", async () => {
+    it("has no network for git under the default egress", async () => {
+      const result = await host().exec("git clone https://github.com/honojs/starter app", {
+        cwd: "/workspace",
+      });
+      expect(result.exitCode).not.toBe(0);
+      expect(result.stderr).toContain("network access is off for this shell");
+    });
+
+    it("hands the given fetch requests it can only send under the egress policy", async () => {
       const stub = host();
       const result = await stub.exec("git clone https://git.example.test/repo.git", {
         backend: "gitfetch",
         cwd: "/workspace",
       });
       expect(result.exitCode).not.toBe(0);
+      expect(result.stderr).toContain("network access is off for this shell");
       expect(await stub.gitFetchRequests()).toEqual([
         "https://git.example.test/repo.git/info/refs?service=git-upload-pack",
       ]);
+      expect(await stub.gitFetchResponses()).toEqual([]);
     });
 
-    it("pushes through the given fetch", async () => {
+    it("sends git's requests through an http-gateway", async () => {
       const stub = host();
-      const result = await stub.exec(
+      await stub.exec("git clone https://git.example.test/repo.git", {
+        backend: "gitgateway",
+        cwd: "/workspace",
+      });
+      expect(await stub.gitFetchResponses()).toEqual([
+        "gateway saw GET https://git.example.test/repo.git/info/refs?service=git-upload-pack\n",
+      ]);
+    });
+
+    it("pushes through the gateway", async () => {
+      const stub = host();
+      await stub.exec(
         "git init -q r && cd r && echo hi > a && git add a && git commit -q -m first >/dev/null && " +
           "git remote add origin https://git.example.test/repo.git && git push -u origin main",
-        { backend: "gitfetch", cwd: "/workspace", env: identity },
+        { backend: "gitgateway", cwd: "/workspace", env: identity },
       );
-      // The fake remote answers 404, so the push fails after asking to receive.
-      expect(result.exitCode).not.toBe(0);
-      expect(result.stderr).not.toContain("not available");
-      expect(await stub.gitFetchRequests()).toEqual([
-        "https://git.example.test/repo.git/info/refs?service=git-receive-pack",
+      expect(await stub.gitFetchResponses()).toEqual([
+        "gateway saw GET https://git.example.test/repo.git/info/refs?service=git-receive-pack\n",
       ]);
     });
 
