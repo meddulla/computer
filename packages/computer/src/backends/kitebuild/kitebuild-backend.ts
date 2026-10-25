@@ -59,10 +59,9 @@ export interface KitebuildBackendOptions {
    * HTTP follows `egress` like every other command, which Kitebuild checks
    * for every request and redirect: refused under "none", sent directly
    * under "direct", and handed to the gateway under "http-gateway".
-   * `{ fetch }` puts a step in front of the requests the policy lets
-   * through to the network, for example to add credentials; it sends each
-   * one on with the `send` it is given. Under "http-gateway" requests go
-   * to the gateway instead, without that step. "workspace" is the
+   * `{ fetch }` puts a step in front of every request the policy lets
+   * out, sent directly or to the gateway, for example to add credentials;
+   * it sends each one on with the `send` it is given. "workspace" is the
    * Workspace's git client, as in the Worker shell, which runs on the host
    * and does not follow `egress`. A toolset program at /usr/bin/git
    * replaces any.
@@ -147,7 +146,7 @@ class KitebuildRuntime {
             // come from the environment or from the caller's fetch.
             kitebuildGit({
               push: true,
-              ...(gitOption === "kitebuild" ? {} : { fetch: gitFetch(gitOption.fetch) }),
+              ...(gitOption === "kitebuild" ? {} : { step: gitOption.fetch }),
             }),
           ]),
       ...(options.tools ?? []),
@@ -386,14 +385,6 @@ function inputNode(bytes: Uint8Array | undefined): FsNode {
       poll: () => 1,
     },
   };
-}
-
-// The transport Kitebuild git sends a request with once the machine's
-// egress policy has let it through: the caller's step, then the network.
-function gitFetch(
-  caller: KitebuildGitFetch,
-): (input: RequestInfo | URL, init?: RequestInit) => Promise<Response> {
-  return (input, init) => caller(new Request(input, init), (request) => fetch(request));
 }
 
 function egressPolicy(policy: WorkspaceEgressPolicy): EgressPolicy | undefined {

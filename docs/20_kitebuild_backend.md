@@ -67,11 +67,11 @@ Some tools load their wasm only when first run, through `import.source()`, which
 
 `git push [-u] [-f] [<remote> [<src>[:<dst>]]]` is allowed, with credentials from the environment (for example `GITHUB_TOKEN`) or from your fetch.
 
-Its HTTP requests (clone, fetch, push) follow `egress`, like every other command; Kitebuild checks the policy for every request and every redirect it follows. They are refused under `none`, so the default shell has no `git clone`; sent directly under `direct`; and handed to your gateway under `http-gateway`, which can allow only the hosts you choose. To add credentials, pass a fetch that receives each request the policy lets through to the network and sends it on with `send`:
+Its HTTP requests (clone, fetch, push) follow `egress`, like every other command; Kitebuild checks the policy for every request and every redirect it follows. They are refused under `none`, so the default shell has no `git clone`; sent directly under `direct`; and handed to your gateway under `http-gateway`, which can allow only the hosts you choose. To add credentials, pass a fetch that receives each request the policy lets out, sent directly or to the gateway, and sends it on with `send`; it never sees a refused request:
 
 ```ts
 new KitebuildBackend({
-  egress: { mode: "direct" },
+  egress: { mode: "http-gateway", gateway: env.GIT_GATEWAY },
   git: {
     fetch: (request, send) => {
       if (new URL(request.url).hostname === "github.com") request.headers.set("authorization", token);
@@ -81,7 +81,6 @@ new KitebuildBackend({
 });
 ```
 
-Under `http-gateway` the gateway receives git's requests instead, without that step, so credentials there belong in the gateway.
 
 `git: "workspace"` uses the Workspace's git client instead, the same one as `workspace.git` and the Worker shell's `git`. It runs on the host and does not follow `egress`. Pass `createGitClient()` from `@cloudflare/computer/git` as the Workspace's `git` option to enable it; without it, `git` prints the not-configured message and exits 1. Files the command wrote are committed before each `git` call, and what git writes under the mounted paths is visible to the rest of the command.
 

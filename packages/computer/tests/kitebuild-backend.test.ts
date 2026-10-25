@@ -194,28 +194,27 @@ describe("KitebuildBackend", () => {
       ]);
     });
 
-    it("hands git's requests to an http-gateway, without the given fetch", async () => {
+    it("sends git's requests through an http-gateway, with the given fetch in front", async () => {
       const stub = host();
-      const result = await stub.exec("git clone https://git.example.test/repo.git", {
+      await stub.exec("git clone https://git.example.test/repo.git", {
         backend: "gitgateway",
         cwd: "/workspace",
       });
-      // The gateway answers the ref advertisement with plain text, which git then rejects.
-      expect(result.exitCode).not.toBe(0);
-      expect(result.stderr).not.toContain("egress policy denied");
-      expect(await stub.gitFetchRequests()).toEqual([]);
+      expect(await stub.gitFetchResponses()).toEqual([
+        "gateway saw GET https://git.example.test/repo.git/info/refs?service=git-upload-pack\n",
+      ]);
     });
 
-    it("hands git push to the gateway", async () => {
+    it("pushes through the gateway", async () => {
       const stub = host();
-      const result = await stub.exec(
+      await stub.exec(
         "git init -q r && cd r && echo hi > a && git add a && git commit -q -m first >/dev/null && " +
           "git remote add origin https://git.example.test/repo.git && git push -u origin main",
         { backend: "gitgateway", cwd: "/workspace", env: identity },
       );
-      expect(result.exitCode).not.toBe(0);
-      expect(result.stderr).not.toContain("egress policy denied");
-      expect(await stub.gitFetchRequests()).toEqual([]);
+      expect(await stub.gitFetchResponses()).toEqual([
+        "gateway saw GET https://git.example.test/repo.git/info/refs?service=git-receive-pack\n",
+      ]);
     });
 
     it("runs the Workspace's git client when asked", async () => {
