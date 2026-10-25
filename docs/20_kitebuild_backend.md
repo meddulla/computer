@@ -67,19 +67,21 @@ Some tools load their wasm only when first run, through `import.source()`, which
 
 `git push [-u] [-f] [<remote> [<src>[:<dst>]]]` is allowed, with credentials from the environment (for example `GITHUB_TOKEN`) or from your fetch.
 
-Its HTTP requests (clone, fetch, push) follow `egress`, like every other command: refused under `none`, so the default shell has no `git clone`; sent directly under `direct`; and through your gateway under `http-gateway`, which can allow only the hosts you choose. To add credentials, pass a fetch that receives each request first and sends it on with `egressFetch`, which applies the policy, so credentials only reach hosts the policy allows:
+Its HTTP requests (clone, fetch, push) follow `egress`, like every other command; Kitebuild checks the policy for every request and every redirect it follows. They are refused under `none`, so the default shell has no `git clone`; sent directly under `direct`; and handed to your gateway under `http-gateway`, which can allow only the hosts you choose. To add credentials, pass a fetch that receives each request the policy lets through to the network and sends it on with `send`:
 
 ```ts
 new KitebuildBackend({
-  egress: { mode: "http-gateway", gateway: env.GIT_GATEWAY },
+  egress: { mode: "direct" },
   git: {
-    fetch: (request, egressFetch) => {
+    fetch: (request, send) => {
       if (new URL(request.url).hostname === "github.com") request.headers.set("authorization", token);
-      return egressFetch(request);
+      return send(request);
     },
   },
 });
 ```
+
+Under `http-gateway` the gateway receives git's requests instead, without that step, so credentials there belong in the gateway.
 
 `git: "workspace"` uses the Workspace's git client instead, the same one as `workspace.git` and the Worker shell's `git`. It runs on the host and does not follow `egress`. Pass `createGitClient()` from `@cloudflare/computer/git` as the Workspace's `git` option to enable it; without it, `git` prints the not-configured message and exits 1. Files the command wrote are committed before each `git` call, and what git writes under the mounted paths is visible to the rest of the command.
 
@@ -108,7 +110,7 @@ Two behaviours differ from Linux because dofs addresses file bytes by path. A fi
 - `direct` lets TCP connect through `cloudflare:sockets` and DNS go to DNS over HTTPS.
 - `http-gateway` sends every connection to the gateway as HTTP requests, by the host name the command asked for. A connection to port 443 is requested as `https://`. Lookups are answered locally, since the gateway routes by name.
 
-JS programs that call `fetch` themselves are outside the machine's policy; a toolset that does so has to honour the egress setting on its own.
+JS programs that fetch through Kitebuild's `egressFetch`, as git and the CI applets do, follow the same policy. A toolset that calls the global `fetch` itself is outside it and has to honour the egress setting on its own.
 
 ## Limits
 

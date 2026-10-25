@@ -27,7 +27,7 @@ import INITRAMFS from "@cloudflare/kitebuild-core/artifacts/initramfs.wasm";
 import { git as kitebuildGit } from "@cloudflare/kitebuild-git";
 
 import type { BackendHandle, WorkspaceBackend, WorkspaceBackendHost } from "../../backend";
-import { hostEgressFetch, type WorkspaceEgressPolicy } from "../../runtime/egress";
+import type { WorkspaceEgressPolicy } from "../../runtime/egress";
 import { ExecJournal } from "./exec-journal";
 import { workspacePrograms } from "./workspace-commands";
 import { mountWorkspace, type WorkspaceMount } from "./workspace-mount";
@@ -56,11 +56,13 @@ export interface KitebuildBackendOptions {
   /**
    * Which `git` the shell has. "kitebuild" (the default) is Kitebuild's
    * git (@cloudflare/kitebuild-git), run on the machine's own files. Its
-   * HTTP follows `egress` like every other command: refused under "none",
-   * sent directly under "direct", and through the gateway under
-   * "http-gateway". `{ fetch }` is the same with each request handed to
-   * `fetch` first, for example to add credentials; it sends the request on
-   * with `egressFetch`, which applies the policy. "workspace" is the
+   * HTTP follows `egress` like every other command, which Kitebuild checks
+   * for every request and redirect: refused under "none", sent directly
+   * under "direct", and handed to the gateway under "http-gateway".
+   * `{ fetch }` puts a step in front of the requests the policy lets
+   * through to the network, for example to add credentials; it sends each
+   * one on with the `send` it is given. Under "http-gateway" requests go
+   * to the gateway instead, without that step. "workspace" is the
    * Workspace's git client, as in the Worker shell, which runs on the host
    * and does not follow `egress`. A toolset program at /usr/bin/git
    * replaces any.
@@ -71,7 +73,7 @@ export interface KitebuildBackendOptions {
 /** A caller's step in front of Kitebuild git's HTTP; see `KitebuildBackendOptions.git`. */
 export type KitebuildGitFetch = (
   request: Request,
-  egressFetch: (request: Request) => Promise<Response>,
+  send: (request: Request) => Promise<Response>,
 ) => Promise<Response>;
 
 const DEFAULT_ENV = { HOME: "/root", PATH: "/usr/bin:/bin:/usr/sbin:/sbin", TERM: "dumb" };
@@ -145,10 +147,7 @@ class KitebuildRuntime {
             // come from the environment or from the caller's fetch.
             kitebuildGit({
               push: true,
-              fetch: gitFetch(
-                options.egress ?? { mode: "none" },
-                gitOption === "kitebuild" ? undefined : gitOption.fetch,
-              ),
+              ...(gitOption === "kitebuild" ? {} : { fetch: gitFetch(gitOption.fetch) }),
             }),
           ]),
       ...(options.tools ?? []),
@@ -389,22 +388,12 @@ function inputNode(bytes: Uint8Array | undefined): FsNode {
   };
 }
 
-// Kitebuild git's HTTP under the shell's egress policy, with the caller's
-// step, when there is one, in front.
+// The transport Kitebuild git sends a request with once the machine's
+// egress policy has let it through: the caller's step, then the network.
 function gitFetch(
-  policy: WorkspaceEgressPolicy,
-  caller: KitebuildGitFetch | undefined,
+  caller: KitebuildGitFetch,
 ): (input: RequestInfo | URL, init?: RequestInit) => Promise<Response> {
-  const egressFetch =
-    hostEgressFetch(policy).fetch ??
-    ((request: Request) =>
-      Promise.reject(
-        new Error(`network access is off for this shell (egress "none"); refused ${request.url}`),
-      ));
-  return (input, init) => {
-    const request = new Request(input, init);
-    return caller === undefined ? egressFetch(request) : caller(request, egressFetch);
-  };
+  return (input, init) => caller(new Request(input, init), (request) => fetch(request));
 }
 
 function egressPolicy(policy: WorkspaceEgressPolicy): EgressPolicy | undefined {
