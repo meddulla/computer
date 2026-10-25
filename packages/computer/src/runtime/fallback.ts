@@ -34,12 +34,18 @@ const KITEBUILD_UNSUPPORTED_MARKER = "kitebuild: unsupported: ";
 // How much stderr the test sees: enough for the shell's last message.
 export const FALLBACK_STDERR_TAIL = 4096;
 
+// What shells print for a program they cannot find: bash's "command not
+// found", dash's and BusyBox's "not found", and BusyBox's "can't execute
+// 'x': No such file or directory" when PATH lookup finds nothing to run.
+const MISSING_PROGRAM = /not found|can't execute '[^']*': No such file or directory/i;
+
 /**
  * A capability error: the shell found no such program (exit 127 with
- * "not found"), or a Kitebuild applet reported an unsupported feature.
+ * "not found" or BusyBox's "can't execute"), or a Kitebuild applet
+ * reported an unsupported feature.
  */
 export function isCapabilityError(exit: WorkspaceCommandExit): boolean {
-  if (exit.exitCode === 127) return /not found/i.test(exit.stderr);
+  if (exit.exitCode === 127) return MISSING_PROGRAM.test(exit.stderr);
   if (exit.exitCode === KITEBUILD_UNSUPPORTED_EXIT) return exit.stderr.includes(KITEBUILD_UNSUPPORTED_MARKER);
   return false;
 }

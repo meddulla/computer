@@ -80,6 +80,13 @@ describe("isCapabilityError", () => {
     expect(
       isCapabilityError({
         backend: "shell",
+        exitCode: 127,
+        stderr: "sh: can't execute 'python3': No such file or directory\n",
+      }),
+    ).toBe(true);
+    expect(
+      isCapabilityError({
+        backend: "shell",
         exitCode: 3,
         stderr: "kitebuild: unsupported: config-key build.lib: library mode\n",
       }),
