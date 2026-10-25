@@ -573,6 +573,44 @@ A backend that accepts a structured `input` and returns a structured
 Passing `input` to a non-callable backend is a clear error rather than a
 silent drop.
 
+### Falling back to a container
+
+`fallback` names a command backend that runs what the others cannot.
+When a command on any other command backend ends with a capability
+error, the runtime runs it again on the fallback backend, and the
+caller sees one execution: the first run's output, a `computer:` note
+on stderr, then the fallback's output and exit code. It is the retry the
+`exec` tool otherwise asks the model to make.
+
+```ts
+const ws = new Workspace({
+  storage: ctx.storage,
+  backends: [
+    new WorkerShellBackend({ id: "shell", loader: env.LOADER, /* ... */ }),
+    new ContainerBackend({ id: "container", container: () => this, /* ... */ }),
+  ],
+  fallback: { backend: "container" },
+});
+
+// Runs on "shell"; `uname` is not found there, so it runs on "container".
+await ws.runtime.exec("uname -a");
+```
+
+A capability error is what `isCapabilityError` accepts: exit 127 with
+"not found" in stderr (the shell found no such program), or exit 3
+with a `kitebuild: unsupported:` line (a Kitebuild applet reported an
+unsupported feature). Any other non-zero exit, such as a type error or a
+failing test, is the command's answer and is not retried. Pass `when`
+to decide differently. The whole command runs again, so a compound
+command repeats the parts before the one that failed.
+
+The fallback's file changes are pulled into the Workspace before the
+run ends, so the next command on any backend sees them. If the
+fallback cannot start, as when containers are disabled in local dev,
+the note says why and the first run's exit stands. Module backends and
+runs with structured `input` never fall back, and `getExec` replays the
+run on the backend that started it.
+
 ### Constructing without the mixin
 
 `withWorkspace` is the shortcut. You can also construct a `Workspace`

@@ -87,6 +87,11 @@ export type { WorkspaceEgressPolicy } from "./runtime/egress";
 export type { WorkspaceOutputOptions } from "./runtime/output-files";
 export type { TruncatedOutput } from "./runtime/output-spool";
 export type { WorkspaceBackendInfo } from "./runtime/runtime";
+export {
+  isCapabilityError,
+  type WorkspaceCommandExit,
+  type WorkspaceFallbackOptions,
+} from "./runtime/fallback";
 export type {
   ModuleExecutionEnvelope,
   ModuleExecutionInput,

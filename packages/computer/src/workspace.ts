@@ -52,6 +52,7 @@ import {
   type WorkspaceOutputOptions,
 } from "./runtime/output-files";
 import { makeOutputLimits } from "./runtime/output-tail";
+import type { WorkspaceFallbackOptions } from "./runtime/fallback";
 import { WorkspaceRuntime } from "./runtime/runtime";
 import {
   isModuleBackend,
@@ -87,6 +88,15 @@ export interface WorkspaceOptions {
   // Omit to construct a filesystem-only Workspace whose runtime
   // reports that no execution backend is configured.
   backends?: WorkspaceRegisteredBackend[];
+
+  // A command backend, by id, that runs what another command backend
+  // cannot: a command that ends with a capability error (the shell
+  // found no such program, or a Kitebuild applet reported an
+  // unsupported feature) runs again there, and the caller sees one
+  // execution. Ordinary failures are not retried. Typically a
+  // ContainerBackend behind a Worker or Kitebuild shell; see
+  // runtime/fallback.ts.
+  fallback?: WorkspaceFallbackOptions;
 
   // Clock used for mtime / last_seen on local FS writes. Defaults
   // to Date.now. Override for deterministic tests.
@@ -253,6 +263,7 @@ export class Workspace {
   // single tail-promise; each caller chains its work onto the tail
   // and updates it. See docs/02 "Concurrent mutators".
   readonly #mutationTails = new Map<string, Promise<unknown>>();
+  readonly #fallback: WorkspaceFallbackOptions | undefined;
 
   constructor(options: WorkspaceOptions) {
     this.#now = options.now ?? Date.now;
@@ -290,6 +301,15 @@ export class Workspace {
       this.#registeredBackends.set(backend.id, backend);
     }
     this.#defaultBackendId = registered[0]?.id;
+    if (options.fallback !== undefined) {
+      const fallback = this.#registeredBackends.get(options.fallback.backend);
+      if (fallback === undefined || isModuleBackend(fallback)) {
+        throw new Error(
+          `Workspace: fallback backend ${JSON.stringify(options.fallback.backend)} is not a registered command backend.`,
+        );
+      }
+    }
+    this.#fallback = options.fallback;
     this.#observer = options.observer ?? noopObserver;
     this.#syncLogger =
       options.syncTelemetry ?? createSyncLogger({ enabled: options.syncTelemetryEnabled ?? false });
@@ -394,6 +414,7 @@ export class Workspace {
         backends: this.#registeredBackends,
         backendHandle: (id) => this.#backendHandleFor(id),
         resolveBackendId: (id) => this.#resolveBackendId(id) ?? "",
+        ...(this.#fallback === undefined ? {} : { fallback: this.#fallback }),
         ...(this.#output === false
           ? {}
           : {

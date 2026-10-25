@@ -1,6 +1,7 @@
 import type { SkippedEntry } from "@cloudflare/dofs";
 
 import type { ExecEncoding } from "../shell";
+import { isCapabilityError, type WorkspaceFallbackOptions, withFallback } from "./fallback";
 import { type CommandOutputFiles, OutputSpool, type SpooledOutput } from "./output-spool";
 import { makeOutputLimits, type OutputLimits } from "./output-tail";
 import {
@@ -27,7 +28,12 @@ interface WorkspaceRuntimeRouterOptions {
   // Where output too long for a result is saved, and the default
   // limits. Absent when the Workspace turned saving off.
   output?: { readonly files: CommandOutputFiles; readonly limits: OutputLimits };
+  // The backend that runs commands another command backend cannot.
+  fallback?: WorkspaceFallbackOptions;
 }
+
+// The sync result of a run with no remote store, as drainModuleResult reports it.
+const NO_SYNC = { status: "complete" as const, applied: 0, skipped: [] as SkippedEntry[] };
 
 // Fresh spools for one pass over an execution's events.
 type OutputSpools = () => { readonly stdout: OutputSpool; readonly stderr: OutputSpool };
@@ -102,7 +108,7 @@ export class WorkspaceRuntime {
       throw new Error(notCallableMessage(backend));
     }
     const runtime = await this.#options.backendHandle(backend);
-    const envelope = await runtime.exec({
+    const input = {
       id: options.id,
       source,
       cwd: options.cwd,
@@ -112,18 +118,83 @@ export class WorkspaceRuntime {
       timeoutMs: options.timeoutMs,
       sync: options.sync,
       onInterrupt: options.onInterrupt,
-    });
+    };
+    const envelope = await runtime.exec(input);
+    const fallback = this.#fallbackFor(backend, options);
+    if (fallback === undefined) {
+      return wrapModuleHandle(
+        runtime,
+        backend,
+        envelope.id,
+        envelope.events,
+        options.encoding,
+        true,
+        envelope.sync,
+        envelope.runtimeId,
+        this.#outputSpools(backend, envelope.id, options.output),
+      );
+    }
+
+    // Kill, sync stats and replay follow the run that is current: the
+    // first one, then the fallback's once the command has moved there.
+    let active = { runtime, id: envelope.id, runtimeId: envelope.runtimeId, sync: envelope.sync };
+    let next: typeof active | undefined;
+    const events = withFallback(
+      backend,
+      envelope.events,
+      fallback,
+      async () => {
+        const fallbackRuntime = await this.#options.backendHandle(fallback.backend);
+        const moved = await fallbackRuntime.exec({ ...input, id: envelope.id });
+        next = { runtime: fallbackRuntime, id: moved.id, runtimeId: moved.runtimeId, sync: moved.sync };
+        return moved;
+      },
+      () => {
+        if (next !== undefined) active = next;
+      },
+    );
+    const routed: WorkspaceModuleBackendHandle = {
+      exec: (execInput) => active.runtime.exec(execInput),
+      getExec: (getInput) => active.runtime.getExec({ ...getInput, id: active.id, runtimeId: active.runtimeId }),
+      killExec: (killInput) => active.runtime.killExec({ ...killInput, id: active.id, runtimeId: active.runtimeId }),
+      disposeExec: (disposeInput) =>
+        active.runtime.disposeExec({ ...disposeInput, id: active.id, runtimeId: active.runtimeId }),
+    };
+    // Read after the events drain, when `active` is settled.
+    const sync = {
+      get pushed() {
+        return active.sync?.pushed ?? 0;
+      },
+      get outcome() {
+        return active.sync?.outcome ?? Promise.resolve({ applied: 0, skipped: [], sync: NO_SYNC });
+      },
+    };
     return wrapModuleHandle(
-      runtime,
+      routed,
       backend,
       envelope.id,
-      envelope.events,
+      events,
       options.encoding,
       true,
-      envelope.sync,
+      sync,
       envelope.runtimeId,
       this.#outputSpools(backend, envelope.id, options.output),
     );
+  }
+
+  // The fallback for a command run on `backend`, or undefined when there
+  // is none: no fallback configured, the run is already on it, or the
+  // backend runs modules or takes structured input, which another
+  // backend cannot be assumed to understand.
+  #fallbackFor(
+    backend: string,
+    options: WorkspaceRuntimeExecOptions<ExecEncoding>,
+  ): Required<WorkspaceFallbackOptions> | undefined {
+    const fallback = this.#options.fallback;
+    if (fallback === undefined || fallback.backend === backend || options.input !== undefined) return undefined;
+    const registered = this.#options.backends.get(backend);
+    if (registered === undefined || isModuleBackend(registered)) return undefined;
+    return { backend: fallback.backend, when: fallback.when ?? isCapabilityError };
   }
 
   getExec(id: string): Promise<WorkspaceRuntimeExecHandle<undefined>>;
