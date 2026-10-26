@@ -107,8 +107,12 @@ export function mountWorkspace(
   provider: Provider,
   { cacheBytes = 8 * 1024 * 1024, writeBuffers = 16 }: WorkspaceMountOptions = {},
 ): WorkspaceMount {
-  /** Workspace path of every node the mount has handed out. */
-  const paths = new Map<FsNode, string>();
+  /**
+   * Workspace paths of every node the mount has handed out. A hard-linked
+   * file has one node and a path per name; I/O goes through the first, so
+   * it keeps working while any name remains.
+   */
+  const paths = new Map<FsNode, string[]>();
   /** One node per dofs inode, so hard links share a node. */
   const byInode = new Map<number, FsNode>();
   /** Files with an open write buffer, oldest first. */
@@ -121,9 +125,23 @@ export function mountWorkspace(
   let pendingInode = PENDING_INODE_BASE;
 
   const pathOf = (node: FsNode): string => {
-    const found = paths.get(node);
+    const found = paths.get(node)?.[0];
     if (found === undefined) throw Object.assign(new Error("node is not mounted"), { code: "EIO" });
     return found;
+  };
+
+  const addPath = (node: FsNode, nodePath: string): void => {
+    const known = paths.get(node);
+    if (known === undefined) paths.set(node, [nodePath]);
+    else if (!known.includes(nodePath)) known.push(nodePath);
+  };
+
+  // Drop one of a node's names. Returns whether it has none left.
+  const removePath = (node: FsNode, nodePath: string): boolean => {
+    const left = (paths.get(node) ?? []).filter((known) => known !== nodePath);
+    if (left.length === 0) paths.delete(node);
+    else paths.set(node, left);
+    return left.length === 0;
   };
 
   const uncache = (node: FsNode): void => {
@@ -259,7 +277,7 @@ export function mountWorkspace(
   ): FsNode => {
     const existing = entry.inode > 0 ? byInode.get(entry.inode) : undefined;
     if (existing !== undefined) {
-      paths.set(existing, nodePath);
+      addPath(existing, nodePath);
       return existing;
     }
     const type = entry.type === "file" ? "reg" : entry.type;
@@ -273,7 +291,7 @@ export function mountWorkspace(
       nlink: entry.nlink,
       persistence,
     };
-    paths.set(node, nodePath);
+    paths.set(node, [nodePath]);
     if (entry.inode > 0) byInode.set(entry.inode, node);
     if (type === "dir") node.children = new LazyChildren(() => loadChildren(node));
     else if (type === "reg") node.body = new Body(node, entry.size);
@@ -330,7 +348,7 @@ export function mountWorkspace(
           };
           const body = new Body(node, 0);
           node.body = body;
-          paths.set(node, nodePath);
+          paths.set(node, [nodePath]);
           provider.openWriteBufferForCreateSync(nodePath, { mode: mode & 0o7777 });
           buffered.set(node, body);
           pending.add(node);
@@ -356,7 +374,8 @@ export function mountWorkspace(
         const nodePath = join(pathOf(parent), name);
         if (node.type === "dir") provider.rmdirSync(nodePath);
         else provider.unlinkSync(nodePath);
-        if (node.type === "dir" || (node.nlink ?? 1) <= 1) forget(node);
+        // A hard-linked file stays reachable, by the same node, through its other names.
+        if (removePath(node, nodePath) || node.type === "dir") forget(node);
         return 0;
       } catch (error) {
         return errnoOf(error);
@@ -368,12 +387,19 @@ export function mountWorkspace(
         const from = join(pathOf(oldParent), oldName);
         const to = join(pathOf(newParent), newName);
         provider.renameSync(from, to);
-        if (replaced !== undefined && (replaced.nlink ?? 1) <= 1) forget(replaced);
-        for (const [other, otherPath] of paths) {
-          if (other === node) paths.set(other, to);
-          else if (node.type === "dir" && otherPath.startsWith(`${from}/`)) {
-            paths.set(other, to + otherPath.slice(from.length));
-          }
+        if (replaced !== undefined && removePath(replaced, to)) forget(replaced);
+        // The renamed name, and under a renamed directory every name below it.
+        for (const [other, known] of paths) {
+          paths.set(
+            other,
+            known.map((otherPath) =>
+              other === node && otherPath === from
+                ? to
+                : node.type === "dir" && otherPath.startsWith(`${from}/`)
+                  ? to + otherPath.slice(from.length)
+                  : otherPath,
+            ),
+          );
         }
         return 0;
       } catch (error) {
@@ -385,7 +411,7 @@ export function mountWorkspace(
         releaseAll();
         const nodePath = join(pathOf(newParent), newName);
         provider.linkSync(pathOf(node), nodePath);
-        paths.set(node, nodePath);
+        addPath(node, nodePath);
         return 0;
       } catch (error) {
         return errnoOf(error);
@@ -448,9 +474,15 @@ export function mountWorkspace(
     } catch (error) {
       if ((error as { code?: unknown }).code !== "ENOENT") throw error;
     }
+    // A node losing this name keeps its others for I/O; with no other name it
+    // keeps this one, so a descriptor a process holds stays usable.
+    const releaseName = (node: FsNode): void => {
+      uncache(node);
+      if ((paths.get(node)?.length ?? 0) > 1) removePath(node, changed);
+    };
     if (stat === undefined) {
       if (current !== undefined) {
-        uncache(current);
+        releaseName(current);
         dir.children.delete(entry);
       }
       return;
@@ -473,7 +505,7 @@ export function mountWorkspace(
       if (type === "symlink") current.link = provider.readlinkSync(changed);
       return;
     }
-    if (current !== undefined) uncache(current);
+    if (current !== undefined) releaseName(current);
     dir.children.set(entry, nodeAt(changed));
   };
 

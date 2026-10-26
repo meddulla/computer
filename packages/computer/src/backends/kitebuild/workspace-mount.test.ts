@@ -198,6 +198,63 @@ describe("mountWorkspace", () => {
     expect(read(vfs, "/workspace/f")).toBe("cccc");
   });
 
+  describe("hard links", () => {
+    async function linked() {
+      const { fs, provider } = store();
+      await fs.writeFile("/workspace/a", "one");
+      const { vfs, mount } = mounted(provider);
+      expect(vfs.link("/workspace/a", "/workspace/b")).toBe(0);
+      // A descriptor holds the node it opened, whichever name that was.
+      return { fs, vfs, mount, held: body(vfs, "/workspace/a") };
+    }
+
+    it("keeps a descriptor opened through the first name working after the second is unlinked", async () => {
+      const { fs, vfs, mount, held } = await linked();
+      expect(vfs.unlink("/workspace/b")).toBe(0);
+      held.writeFrom(text("ONE"), 0);
+      mount.flush();
+      expect(await fs.readFile("/workspace/a", "utf8")).toBe("ONE");
+      expect(str(held.snapshot())).toBe("ONE");
+    });
+
+    it("keeps a descriptor opened through the first name working after the first is unlinked", async () => {
+      const { fs, vfs, mount, held } = await linked();
+      expect(vfs.unlink("/workspace/a")).toBe(0);
+      held.writeFrom(text("TWO"), 0);
+      mount.flush();
+      expect(await fs.readFile("/workspace/b", "utf8")).toBe("TWO");
+      expect(str(held.snapshot())).toBe("TWO");
+    });
+
+    it("keeps the other name after renaming one", async () => {
+      const { fs, vfs, mount, held } = await linked();
+      expect(vfs.rename("/workspace/b", "/workspace/c")).toBe(0);
+      expect(vfs.unlink("/workspace/a")).toBe(0);
+      held.writeFrom(text("SIX"), 0);
+      mount.flush();
+      expect(await fs.readFile("/workspace/c", "utf8")).toBe("SIX");
+    });
+
+    it("moves to the other name when the Workspace removes one outside the machine", async () => {
+      const { fs, vfs, mount, held } = await linked();
+      await fs.rm("/workspace/a");
+      mount.refresh(["/workspace/a"]);
+      expect(vfs.stat("/workspace/a")).toBeNull();
+      held.writeFrom(text("SEV"), 0);
+      mount.flush();
+      expect(await fs.readFile("/workspace/b", "utf8")).toBe("SEV");
+    });
+
+    it("forgets the node only when its last name is unlinked", async () => {
+      const { fs, vfs } = await linked();
+      expect(vfs.unlink("/workspace/a")).toBe(0);
+      expect(read(vfs, "/workspace/b")).toBe("one");
+      expect(vfs.unlink("/workspace/b")).toBe(0);
+      expect(vfs.stat("/workspace/b")).toBeNull();
+      await expect(fs.stat("/workspace/b")).rejects.toMatchObject({ code: "ENOENT" });
+    });
+  });
+
   it("returns Linux errno values", () => {
     const { provider } = store();
     const { vfs } = mounted(provider);
