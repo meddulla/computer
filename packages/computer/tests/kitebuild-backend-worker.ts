@@ -202,7 +202,10 @@ export class HostDO extends DurableObject<Env> {
 
   // Stands in for an embedder's fetch: records each request git makes, sends it
   // on, and records what came back.
-  async #gitFetch(request: Request, send: (request: Request) => Promise<Response>): Promise<Response> {
+  async #gitFetch(
+    request: Request,
+    send: (request: Request) => Promise<Response>,
+  ): Promise<Response> {
     this.gitRequests.push(request.url);
     const response = await send(request);
     this.gitResponses.push(await response.clone().text());
