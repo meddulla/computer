@@ -1,7 +1,14 @@
 import type { SkippedEntry } from "@cloudflare/dofs";
 
 import type { ExecEncoding } from "../shell";
-import { isCapabilityError, type WorkspaceFallbackOptions, withFallback } from "./fallback";
+import {
+  type FallbackRoutes,
+  isCapabilityError,
+  MemoryFallbackRoutes,
+  movedExecution,
+  type WorkspaceFallbackOptions,
+  withFallback,
+} from "./fallback";
 import { type CommandOutputFiles, OutputSpool, type SpooledOutput } from "./output-spool";
 import { makeOutputLimits, type OutputLimits } from "./output-tail";
 import {
@@ -30,6 +37,9 @@ interface WorkspaceRuntimeRouterOptions {
   output?: { readonly files: CommandOutputFiles; readonly limits: OutputLimits };
   // The backend that runs commands another command backend cannot.
   fallback?: WorkspaceFallbackOptions;
+  // Where executions moved to the fallback went. Defaults to memory; the
+  // Workspace keeps them in its database so they outlive a restart.
+  routes?: FallbackRoutes;
 }
 
 // The sync result of a run with no remote store, as drainModuleResult reports it.
@@ -63,9 +73,20 @@ export interface WorkspaceBackendInfo {
 
 export class WorkspaceRuntime {
   readonly #options: WorkspaceRuntimeRouterOptions;
+  readonly #routes: FallbackRoutes;
 
   constructor(options: WorkspaceRuntimeRouterOptions) {
     this.#options = options;
+    this.#routes = options.routes ?? new MemoryFallbackRoutes();
+  }
+
+  // The handle for an execution by id: the backend's own, or one that
+  // spans both runs when the execution moved to the fallback backend.
+  async #executionHandle(backend: string, id: string): Promise<WorkspaceModuleBackendHandle> {
+    const runtime = await this.#options.backendHandle(backend);
+    const moved = this.#routes.get(backend, id);
+    if (moved === undefined) return runtime;
+    return movedExecution(backend, runtime, moved, await this.#options.backendHandle(moved));
   }
 
   // Whether the named backend accepts a structured `input` value and
@@ -135,10 +156,12 @@ export class WorkspaceRuntime {
       );
     }
 
-    // Kill, sync stats and replay follow the run that is current: the
-    // first one, then the fallback's once the command has moved there.
+    // Kill and sync stats follow the run that is current: the first one,
+    // then the fallback's once the command has moved there. Replay and
+    // dispose span both runs after the move.
     let active = { runtime, id: envelope.id, runtimeId: envelope.runtimeId, sync: envelope.sync };
     let next: typeof active | undefined;
+    let moved: WorkspaceModuleBackendHandle | undefined;
     const events = withFallback(
       backend,
       envelope.events,
@@ -146,19 +169,41 @@ export class WorkspaceRuntime {
       async () => {
         const fallbackRuntime = await this.#options.backendHandle(fallback.backend);
         const moved = await fallbackRuntime.exec({ ...input, id: envelope.id });
-        next = { runtime: fallbackRuntime, id: moved.id, runtimeId: moved.runtimeId, sync: moved.sync };
+        next = {
+          runtime: fallbackRuntime,
+          id: moved.id,
+          runtimeId: moved.runtimeId,
+          sync: moved.sync,
+        };
         return moved;
       },
       () => {
-        if (next !== undefined) active = next;
+        if (next === undefined) return;
+        active = next;
+        moved = movedExecution(backend, runtime, fallback.backend, next.runtime);
+        this.#routes.remember(backend, envelope.id, fallback.backend);
       },
     );
     const routed: WorkspaceModuleBackendHandle = {
       exec: (execInput) => active.runtime.exec(execInput),
-      getExec: (getInput) => active.runtime.getExec({ ...getInput, id: active.id, runtimeId: active.runtimeId }),
-      killExec: (killInput) => active.runtime.killExec({ ...killInput, id: active.id, runtimeId: active.runtimeId }),
-      disposeExec: (disposeInput) =>
-        active.runtime.disposeExec({ ...disposeInput, id: active.id, runtimeId: active.runtimeId }),
+      getExec: (getInput) =>
+        moved !== undefined
+          ? moved.getExec({ ...getInput, id: envelope.id })
+          : active.runtime.getExec({ ...getInput, id: active.id, runtimeId: active.runtimeId }),
+      killExec: (killInput) =>
+        active.runtime.killExec({ ...killInput, id: active.id, runtimeId: active.runtimeId }),
+      disposeExec: async (disposeInput) => {
+        if (moved === undefined) {
+          await active.runtime.disposeExec({
+            ...disposeInput,
+            id: active.id,
+            runtimeId: active.runtimeId,
+          });
+          return;
+        }
+        await moved.disposeExec({ ...disposeInput, id: envelope.id, runtimeId: active.runtimeId });
+        this.#routes.forget(backend, envelope.id);
+      },
     };
     // Read after the events drain, when `active` is settled.
     const sync = {
@@ -191,7 +236,8 @@ export class WorkspaceRuntime {
     options: WorkspaceRuntimeExecOptions<ExecEncoding>,
   ): Required<WorkspaceFallbackOptions> | undefined {
     const fallback = this.#options.fallback;
-    if (fallback === undefined || fallback.backend === backend || options.input !== undefined) return undefined;
+    if (fallback === undefined || fallback.backend === backend || options.input !== undefined)
+      return undefined;
     const registered = this.#options.backends.get(backend);
     if (registered === undefined || isModuleBackend(registered)) return undefined;
     return { backend: fallback.backend, when: fallback.when ?? isCapabilityError };
@@ -212,7 +258,7 @@ export class WorkspaceRuntime {
   ): Promise<WorkspaceRuntimeExecHandle<E>> {
     assertExecutionId(id);
     const backend = this.#backend(options.backend);
-    const runtime = await this.#options.backendHandle(backend);
+    const runtime = await this.#executionHandle(backend, id);
     const envelope = await runtime.getExec({ id, after: resumeToAfter(options.resume) });
     const full = options.resume === undefined || options.resume === "full";
     return wrapModuleHandle(
@@ -285,13 +331,14 @@ export class WorkspaceRuntime {
   async killExec(id: string, options: WorkspaceRuntimeKillOptions = {}): Promise<void> {
     assertExecutionId(id);
     const backend = this.#backend(options.backend);
-    await (await this.#options.backendHandle(backend)).killExec({ id, signal: options.signal });
+    await (await this.#executionHandle(backend, id)).killExec({ id, signal: options.signal });
   }
 
   async disposeExec(id: string, options: WorkspaceRuntimeDisposeOptions = {}): Promise<void> {
     assertExecutionId(id);
     const backend = this.#backend(options.backend);
-    await (await this.#options.backendHandle(backend)).disposeExec({ id });
+    await (await this.#executionHandle(backend, id)).disposeExec({ id });
+    this.#routes.forget(backend, id);
   }
 
   // Spools that cut each stream to the limits and save the full output

@@ -44,6 +44,7 @@ import { buildMountRegistry, type MountValue } from "./mounts/registry";
 import type { Mount } from "./mounts/types";
 import { noopObserver, safeErrorMessage, type WorkspaceObserver, withSpan } from "./observe";
 import { createSyncLogger, type SyncLogger } from "./observe/sync-telemetry";
+import { SqlFallbackRoutes, type WorkspaceFallbackOptions } from "./runtime/fallback";
 import {
   DEFAULT_OUTPUT_DIR,
   DEFAULT_OUTPUT_KEEP,
@@ -52,7 +53,6 @@ import {
   type WorkspaceOutputOptions,
 } from "./runtime/output-files";
 import { makeOutputLimits } from "./runtime/output-tail";
-import type { WorkspaceFallbackOptions } from "./runtime/fallback";
 import { WorkspaceRuntime } from "./runtime/runtime";
 import {
   isModuleBackend,
@@ -414,7 +414,9 @@ export class Workspace {
         backends: this.#registeredBackends,
         backendHandle: (id) => this.#backendHandleFor(id),
         resolveBackendId: (id) => this.#resolveBackendId(id) ?? "",
-        ...(this.#fallback === undefined ? {} : { fallback: this.#fallback }),
+        ...(this.#fallback === undefined
+          ? {}
+          : { fallback: this.#fallback, routes: new SqlFallbackRoutes(this.#db) }),
         ...(this.#output === false
           ? {}
           : {

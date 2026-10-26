@@ -1,7 +1,15 @@
 import { describe, expect, it, vi } from "vitest";
 
+import { Database, initializeSchema } from "@cloudflare/dofs";
+import { SQLiteTestStorage } from "@cloudflare/dofs/testing";
 import type { WorkspaceBackend } from "../backend";
-import { isCapabilityError } from "./fallback";
+
+import {
+  type FallbackRoutes,
+  isCapabilityError,
+  MemoryFallbackRoutes,
+  SqlFallbackRoutes,
+} from "./fallback";
 import { WorkspaceRuntime } from "./runtime";
 import type {
   ModuleExecutionEnvelope,
@@ -60,6 +68,7 @@ function runtimeWith(
   handles: Record<string, WorkspaceModuleBackendHandle>,
   registered: WorkspaceRegisteredBackend[] = [commandBackend("shell"), commandBackend("container")],
   fallback: { backend: string } | null = { backend: "container" },
+  routes: FallbackRoutes = new MemoryFallbackRoutes(),
 ): WorkspaceRuntime {
   return new WorkspaceRuntime({
     backends: new Map(registered.map((backend) => [backend.id, backend])),
@@ -70,13 +79,22 @@ function runtimeWith(
     },
     resolveBackendId: (id) => id ?? registered[0]?.id ?? "",
     ...(fallback === null ? {} : { fallback }),
+    routes,
   });
 }
 
 describe("isCapabilityError", () => {
   it("is a missing program or a Kitebuild unsupported feature", () => {
-    expect(isCapabilityError({ backend: "shell", exitCode: 127, stderr: "sh: uname: not found\n" })).toBe(true);
-    expect(isCapabilityError({ backend: "shell", exitCode: 127, stderr: "bash: apt: command not found\n" })).toBe(true);
+    expect(
+      isCapabilityError({ backend: "shell", exitCode: 127, stderr: "sh: uname: not found\n" }),
+    ).toBe(true);
+    expect(
+      isCapabilityError({
+        backend: "shell",
+        exitCode: 127,
+        stderr: "bash: apt: command not found\n",
+      }),
+    ).toBe(true);
     expect(
       isCapabilityError({
         backend: "shell",
@@ -94,8 +112,12 @@ describe("isCapabilityError", () => {
   });
 
   it("is not an ordinary failure", () => {
-    expect(isCapabilityError({ backend: "shell", exitCode: 1, stderr: "error TS2322\n" })).toBe(false);
-    expect(isCapabilityError({ backend: "shell", exitCode: 127, stderr: "exit 127 by hand\n" })).toBe(false);
+    expect(isCapabilityError({ backend: "shell", exitCode: 1, stderr: "error TS2322\n" })).toBe(
+      false,
+    );
+    expect(
+      isCapabilityError({ backend: "shell", exitCode: 127, stderr: "exit 127 by hand\n" }),
+    ).toBe(false);
     expect(isCapabilityError({ backend: "shell", exitCode: 3, stderr: "three\n" })).toBe(false);
   });
 });
@@ -106,22 +128,38 @@ describe("WorkspaceRuntime fallback", () => {
     const container = handle([out(1, "Linux\n"), exit(2, 0)]);
     const runtime = runtimeWith({ shell, container });
 
-    const run = await runtime.exec("echo before; uname", { encoding: "utf8", cwd: "/workspace", env: { A: "1" } });
+    const run = await runtime.exec("echo before; uname", {
+      encoding: "utf8",
+      cwd: "/workspace",
+      env: { A: "1" },
+    });
     const result = await run.result();
 
     expect(result.exitCode).toBe(0);
     expect(result.stdout).toBe("before\nLinux\n");
     expect(result.stderr).toContain("sh: uname: not found");
-    expect(result.stderr).toContain('computer: "shell" cannot run this command; running it on "container"');
+    expect(result.stderr).toContain(
+      'computer: "shell" cannot run this command; running it on "container"',
+    );
     expect(container.exec).toHaveBeenCalledWith(
-      expect.objectContaining({ source: "echo before; uname", cwd: "/workspace", env: { A: "1" }, id: "exec" }),
+      expect.objectContaining({
+        source: "echo before; uname",
+        cwd: "/workspace",
+        env: { A: "1" },
+        id: "exec",
+      }),
     );
   });
 
   it("runs a Kitebuild unsupported feature on the fallback backend", async () => {
-    const shell = handle([err(1, "kitebuild: unsupported: config-key build.lib: library mode\n"), exit(2, 3)]);
+    const shell = handle([
+      err(1, "kitebuild: unsupported: config-key build.lib: library mode\n"),
+      exit(2, 3),
+    ]);
     const container = handle([out(1, "built\n"), exit(2, 0)]);
-    const result = await (await runtimeWith({ shell, container }).exec("vite build", { encoding: "utf8" })).result();
+    const result = await (
+      await runtimeWith({ shell, container }).exec("vite build", { encoding: "utf8" })
+    ).result();
     expect(result.exitCode).toBe(0);
     expect(result.stdout).toBe("built\n");
   });
@@ -129,7 +167,9 @@ describe("WorkspaceRuntime fallback", () => {
   it("keeps an ordinary failure", async () => {
     const shell = handle([err(1, "a.ts(1,7): error TS2322\n"), exit(2, 1)]);
     const container = handle([exit(1, 0)]);
-    const result = await (await runtimeWith({ shell, container }).exec("tsc", { encoding: "utf8" })).result();
+    const result = await (
+      await runtimeWith({ shell, container }).exec("tsc", { encoding: "utf8" })
+    ).result();
     expect(result.exitCode).toBe(1);
     expect(container.exec).not.toHaveBeenCalled();
   });
@@ -138,16 +178,23 @@ describe("WorkspaceRuntime fallback", () => {
     const shell = handle([err(1, "sh: python3: not found\n"), exit(2, 127)]);
     const container = handle([]);
     vi.mocked(container.exec).mockRejectedValue(new Error("containers are disabled"));
-    const result = await (await runtimeWith({ shell, container }).exec("python3", { encoding: "utf8" })).result();
+    const result = await (
+      await runtimeWith({ shell, container }).exec("python3", { encoding: "utf8" })
+    ).result();
     expect(result.exitCode).toBe(127);
-    expect(result.stderr).toContain('fallback backend "container" is unavailable: containers are disabled');
+    expect(result.stderr).toContain(
+      'fallback backend "container" is unavailable: containers are disabled',
+    );
   });
 
   it("does not fall back from the fallback backend itself", async () => {
     const shell = handle([]);
     const container = handle([err(1, "sh: nope: not found\n"), exit(2, 127)]);
     const result = await (
-      await runtimeWith({ shell, container }).exec("nope", { backend: "container", encoding: "utf8" })
+      await runtimeWith({ shell, container }).exec("nope", {
+        backend: "container",
+        encoding: "utf8",
+      })
     ).result();
     expect(result.exitCode).toBe(127);
     expect(shell.exec).not.toHaveBeenCalled();
@@ -173,7 +220,11 @@ describe("WorkspaceRuntime fallback", () => {
   });
 
   it("waits for the fallback's sync before the result", async () => {
-    let pulled!: (value: { applied: number; skipped: []; sync: { status: "complete"; applied: number; skipped: [] } }) => void;
+    let pulled!: (value: {
+      applied: number;
+      skipped: [];
+      sync: { status: "complete"; applied: number; skipped: [] };
+    }) => void;
     const outcome = new Promise<Parameters<typeof pulled>[0]>((resolve) => (pulled = resolve));
     const shell = handle([err(1, "sh: make: not found\n"), exit(2, 127)]);
     const container = handle([exit(1, 0)], { pushed: 4, outcome });
@@ -212,8 +263,107 @@ describe("WorkspaceRuntime fallback", () => {
       if (next.done || (next.value.name === "stdout" && next.value.value === "started\n")) break;
     }
     await run.kill("SIGKILL");
-    expect(container.killExec).toHaveBeenCalledWith(expect.objectContaining({ id: "exec", signal: "SIGKILL" }));
+    expect(container.killExec).toHaveBeenCalledWith(
+      expect.objectContaining({ id: "exec", signal: "SIGKILL" }),
+    );
     expect(shell.killExec).not.toHaveBeenCalled();
     finish();
+  });
+
+  describe("reattaching", () => {
+    // The shell's run moved to the container; a later caller knows only the id
+    // and the backend it asked for.
+    function moved() {
+      const shell = handle([out(1, "before\n"), err(2, "sh: uname: not found\n"), exit(3, 127)]);
+      const container = handle([out(1, "Linux\n"), exit(2, 0)]);
+      return { shell, container };
+    }
+
+    it("replays the whole execution by id from the backend it started on", async () => {
+      const { shell, container } = moved();
+      const routes = new MemoryFallbackRoutes();
+      await (
+        await runtimeWith({ shell, container }, undefined, undefined, routes).exec("uname")
+      ).result();
+
+      // A new runtime over the same routes, as after the Durable Object restarts.
+      const again = runtimeWith({ shell, container }, undefined, undefined, routes);
+      const result = await (await again.getExec("exec", { encoding: "utf8" })).result();
+      expect(result.exitCode).toBe(0);
+      expect(result.stdout).toBe("before\nLinux\n");
+      expect(result.stderr).toContain("sh: uname: not found");
+      expect(result.stderr).toContain('running it on "container"');
+    });
+
+    it("replays the same sequence numbers as the live run, and resumes after one", async () => {
+      const { shell, container } = moved();
+      const routes = new MemoryFallbackRoutes();
+      const live: number[] = [];
+      for await (const event of await runtimeWith(
+        { shell, container },
+        undefined,
+        undefined,
+        routes,
+      ).exec("uname")) {
+        live.push(event.seq);
+      }
+      const replayed: number[] = [];
+      for await (const event of await runtimeWith(
+        { shell, container },
+        undefined,
+        undefined,
+        routes,
+      ).getExec("exec")) {
+        replayed.push(event.seq);
+      }
+      expect(replayed).toEqual(live);
+
+      const after = live[2];
+      const resumed: number[] = [];
+      for await (const event of await runtimeWith(
+        { shell, container },
+        undefined,
+        undefined,
+        routes,
+      ).getExec("exec", {
+        resume: after,
+      })) {
+        resumed.push(event.seq);
+      }
+      expect(resumed).toEqual(live.filter((seq) => seq > after));
+    });
+
+    it("kills the fallback run and disposes both runs by id", async () => {
+      const { shell, container } = moved();
+      const routes = new MemoryFallbackRoutes();
+      await (
+        await runtimeWith({ shell, container }, undefined, undefined, routes).exec("uname")
+      ).result();
+
+      const again = runtimeWith({ shell, container }, undefined, undefined, routes);
+      await again.killExec("exec", { signal: "SIGTERM" });
+      expect(container.killExec).toHaveBeenCalledWith(
+        expect.objectContaining({ id: "exec", signal: "SIGTERM" }),
+      );
+      expect(shell.killExec).not.toHaveBeenCalled();
+
+      await again.disposeExec("exec");
+      expect(shell.disposeExec).toHaveBeenCalledWith(expect.objectContaining({ id: "exec" }));
+      expect(container.disposeExec).toHaveBeenCalledWith(expect.objectContaining({ id: "exec" }));
+      expect(routes.get("shell", "exec")).toBeUndefined();
+    });
+  });
+});
+
+describe("SqlFallbackRoutes", () => {
+  it("keeps where an execution moved across instances", () => {
+    const db = new Database(new SQLiteTestStorage());
+    initializeSchema(db, Date.now);
+    new SqlFallbackRoutes(db).remember("shell", "e1", "container");
+    const later = new SqlFallbackRoutes(db);
+    expect(later.get("shell", "e1")).toBe("container");
+    expect(later.get("container", "e1")).toBeUndefined();
+    later.forget("shell", "e1");
+    expect(new SqlFallbackRoutes(db).get("shell", "e1")).toBeUndefined();
   });
 });

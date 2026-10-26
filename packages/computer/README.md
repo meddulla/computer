@@ -608,8 +608,14 @@ The fallback's file changes are pulled into the Workspace before the
 run ends, so the next command on any backend sees them. If the
 fallback cannot start, as when containers are disabled in local dev,
 the note says why and the first run's exit stands. Module backends and
-runs with structured `input` never fall back, and `getExec` replays the
-run on the backend that started it.
+runs with structured `input` never fall back.
+
+The Workspace records in its database that a run moved, so the run
+stays one execution under its id and the backend it was sent to, also
+after its handle is gone or the Durable Object restarts: `getExec`
+replays the first run, the note and the fallback run with the same
+sequence numbers as live, `killExec` stops the fallback run, and
+`disposeExec` removes both.
 
 ### Constructing without the mixin
 
