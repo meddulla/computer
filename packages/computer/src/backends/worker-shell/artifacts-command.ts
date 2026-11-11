@@ -14,8 +14,8 @@
 //
 // Keeping this file clean is deliberate. Argv parsing and every
 // behavioral choice live in `artifacts/cli.ts`, and the bridge to the
-// client in `../workspace-commands.ts`, shared with other shells;
-// this file only adapts the just-bash `Command` signature.
+// client in `../workspace-commands.ts`, shared with the Kitebuild
+// backend; this file only adapts the just-bash `Command` signature.
 
 import { type CustomCommand, defineCommand } from "just-bash";
 
